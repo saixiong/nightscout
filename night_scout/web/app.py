@@ -165,7 +165,9 @@ def create_app(
                 )
         resp: Response = await call_next(request)
         resp.headers["X-Frame-Options"] = "DENY"
-        resp.headers["Referrer-Policy"] = "no-referrer"
+        resp.headers["Referrer-Policy"] = (
+            "same-origin"  # no-referrer makes browsers send Origin: null
+        )
         resp.headers["Content-Security-Policy"] = (
             "default-src 'self'; img-src 'self' data:; style-src 'self'; "
             "script-src 'self'; frame-ancestors 'none'; form-action 'self'"
@@ -178,7 +180,10 @@ def create_app(
 
     def render(request: Request, name: str, **ctx: Any) -> HTMLResponse:
         run = store.last_run()
-        statuses = store.source_statuses(run["id"]) if run else []
+        every = store.source_statuses(run["id"]) if run else []
+        # Pipeline lines (Gemma, embeddings) are shown too, but aren't sources.
+        statuses = [st for st in every if not st.key.startswith("pipeline:")]
+        pipeline_lines = [st for st in every if st.key.startswith("pipeline:")]
         return templates.TemplateResponse(
             request,
             name,
@@ -187,7 +192,8 @@ def create_app(
                 "cfg": state["cfg"],
                 "last_run": run,
                 "statuses": statuses,
-                "failed_sources": [s for s in statuses if not s.ok],
+                "failed_sources": [s for s in every if not s.ok],
+                "pipeline_lines": pipeline_lines,
                 "flash": request.query_params.get("msg"),
                 **ctx,
             },

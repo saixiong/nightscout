@@ -80,7 +80,10 @@ def cmd_serve(args: argparse.Namespace) -> int:
     key = secrets.token_urlsafe(24)
     app = create_app(cfg, args.config, port=args.port, session_key=key)
     url = f"http://127.0.0.1:{args.port}/?key={key}"
-    print(f"Night Scout is running. Open this link (it signs your browser in):\n\n  {url}\n")
+    print(
+        f"Night Scout is running. Open this link (it signs your browser in):\n\n  {url}\n",
+        flush=True,
+    )
     if not args.no_browser:
         webbrowser.open(url)
     uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning")

@@ -27,6 +27,7 @@
     <span>Last run {{ last_run.started_at[:16].replace('T', ' ') }} UTC · {{ last_run.status }}</span>
     {% for s in failed_sources %}<span class="warn">{{ s.line() }}</span>{% endfor %}
     {% if not failed_sources and statuses %}<span class="ok">All {{ statuses|length }} sources OK</span>{% endif %}
+    {% for p in pipeline_lines if p.ok %}<span>{{ p.label }}: {{ p.message }}</span>{% endfor %}
   {% else %}
     <span>No runs yet. Try <code>night-scout run</code>.</span>
   {% endif %}

@@ -182,3 +182,15 @@ def test_source_feedback_reports_weight(env) -> None:
             "/feedback/source", data={"target": "Blog", "value": "down", "csrf_token": token}
         )
     assert r.json()["muted"] is True
+
+
+def test_same_origin_form_post_allowed_and_referrer_policy(env) -> None:
+    client, token, ids, *_ = env
+    r = client.post(
+        f"/item/{ids['rss:1']}/feedback",
+        data={"value": "up", "csrf_token": token},
+        headers={"origin": "http://127.0.0.1:8765"},
+    )
+    assert r.status_code == 200
+    # "no-referrer" would make browsers send `Origin: null` and break every form
+    assert client.get("/").headers["referrer-policy"] == "same-origin"
