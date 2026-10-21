@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+<rss version="2.0"><channel><title>RSS Blog</title>
+<item><title>Hello &amp; welcome</title><link>https://rss.example.org/hello</link>
+<guid>https://rss.example.org/hello</guid><pubDate>Mon, 20 Oct 2026 09:00:00 GMT</pubDate>
+<description>&lt;p&gt;An RSS 2.0 item.&lt;/p&gt;</description></item>
+</channel></rss>

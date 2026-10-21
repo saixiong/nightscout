@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Example Blog</title>
+  <entry>
+    <title>Structured output with local models</title>
+    <link href="https://blog.example.com/2026/structured-output/?utm_source=rss" rel="alternate"/>
+    <id>https://blog.example.com/2026/structured-output/</id>
+    <updated>2026-10-20T08:00:00Z</updated>
+    <author><name>Jane Doe</name></author>
+    <content type="html">&lt;p&gt;JSON schemas make &lt;b&gt;small&lt;/b&gt; models reliable.&lt;/p&gt;&lt;p&gt;Second paragraph.&lt;/p&gt;</content>
+  </entry>
+</feed>

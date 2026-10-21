@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+build/
+dist/
+# local runtime data never belongs in the repo
+/config.yaml
+/profile.yaml
+/digests/
+*.db
+.DS_Store

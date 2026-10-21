@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns:yt="http://www.youtube.com/xml/schemas/2015" xmlns:media="http://search.yahoo.com/mrss/" xmlns="http://www.w3.org/2005/Atom">
+ <title>Example Channel</title>
+ <entry>
+  <id>yt:video:abcdefghijk</id>
+  <yt:videoId>abcdefghijk</yt:videoId>
+  <yt:channelId>UC_example</yt:channelId>
+  <title>Running Gemma locally in 5 minutes</title>
+  <link rel="alternate" href="https://www.youtube.com/watch?v=abcdefghijk"/>
+  <author><name>Example Channel</name></author>
+  <published>2026-10-20T16:21:03+00:00</published>
+  <media:group>
+   <media:title>Running Gemma locally in 5 minutes</media:title>
+   <media:description>We install Ollama and pull a Gemma model.
+Links below.</media:description>
+  </media:group>
+ </entry>
+ <entry>
+  <id>yt:video:zyxwvutsrqp</id>
+  <yt:videoId>zyxwvutsrqp</yt:videoId>
+  <title>Second video</title>
+  <link rel="alternate" href="https://www.youtube.com/watch?v=zyxwvutsrqp"/>
+  <published>2026-10-19T10:00:00+00:00</published>
+ </entry>
+</feed>
