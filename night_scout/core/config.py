@@ -139,6 +139,8 @@ class Config(BaseModel):
     contact: str = "local user"
     data_dir: str | None = None
     profile_path: str | None = None
+    # Where "Note for project" writes, relative to each project's directory.
+    notes_subdir: str = "notes/night-scout"
 
     def data_path(self) -> Path:
         return Path(self.data_dir).expanduser() if self.data_dir else data_dir()

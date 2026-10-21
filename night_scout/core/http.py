@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import ipaddress
 import logging
+import socket
 import time
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 
@@ -119,12 +121,55 @@ class PoliteClient:
             log.info("retrying %s in %.0fs (%s)", host, backoff, err)
             self._sleep(backoff)
 
+    def get_public(self, url: str, headers: dict[str, str] | None = None) -> httpx.Response:
+        """GET a URL that came from a feed: public hosts only, checked on every redirect.
+
+        Feed items are untrusted, so a link must not reach localhost or your LAN.
+        """
+        for _ in range(5):
+            if not is_public_url(url):
+                raise SourceError("refused: not a public http(s) address", "blocked")
+            host = urlsplit(url).hostname or ""
+            self._wait_turn(host)
+            try:
+                resp = self._client.get(url, headers=headers, follow_redirects=False)
+            except httpx.HTTPError as e:
+                raise SourceError(f"network error ({type(e).__name__})", "network") from e
+            if resp.is_redirect and resp.headers.get("location"):
+                url = urljoin(url, resp.headers["location"])
+                continue
+            if resp.status_code >= 400:
+                raise SourceError(f"HTTP {resp.status_code}", "error")
+            return resp
+        raise SourceError("too many redirects", "error")
+
     def get_json(self, url: str, **kw: Any) -> Any:
         resp = self.get(url, **kw)
         try:
             return resp.json()
         except ValueError as e:
             raise SourceError("response was not JSON", "bad-data") from e
+
+
+def is_public_url(url: str, resolve: Any = socket.getaddrinfo) -> bool:
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        return False
+    host = parts.hostname
+    try:
+        infos = resolve(host, parts.port or (443 if parts.scheme == "https" else 80))
+    except (socket.gaierror, UnicodeError, OSError):
+        return False
+    if not infos:
+        return False
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0].split("%", 1)[0])
+        except ValueError:
+            return False
+        if not ip.is_global or ip.is_multicast:
+            return False
+    return True
 
 
 def _retry_after(resp: httpx.Response) -> float | None:
