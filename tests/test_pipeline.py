@@ -315,3 +315,32 @@ def test_run_lock_blocks_a_second_run(tmp_path: Path) -> None:
     finally:
         held.release()
     assert run_once(cfg, store=Store(cfg.db_file()), llm=fake_llm()).ok
+
+
+def test_try_it_plan_rejects_code_as_shell_steps() -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    from night_scout.core.judge import TryItPlan
+
+    with pytest.raises(ValidationError, match="source code, not a shell command"):
+        TryItPlan(
+            runtime="python",
+            setup=["pip install rank_bm25"],
+            smoke_test=["from rank_bm25 import BM25Okapi", "print('OK')"],
+            expected_output="OK",
+        )
+    with pytest.raises(ValidationError):
+        TryItPlan(
+            runtime="node",
+            setup=["npm install zod"],
+            smoke_test=["const z = require('zod')"],
+            expected_output="OK",
+        )
+    ok = TryItPlan(
+        runtime="python",
+        setup=["pip install rank_bm25"],
+        smoke_test=["python -c \"from rank_bm25 import BM25Okapi; print('OK')\""],
+        expected_output="OK",
+    )
+    assert ok.smoke_test[0].startswith("python -c")
