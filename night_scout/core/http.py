@@ -7,7 +7,7 @@ import logging
 import socket
 import time
 from typing import Any
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import httpx
 
@@ -55,6 +55,7 @@ class PoliteClient:
         self._last: dict[str, float] = {}
         self._max_retries = max_retries
         self._sleep = sleep
+        self._resolve: Any = socket.getaddrinfo
 
     def close(self) -> None:
         self._client.close()
@@ -121,26 +122,49 @@ class PoliteClient:
             log.info("retrying %s in %.0fs (%s)", host, backoff, err)
             self._sleep(backoff)
 
-    def get_public(self, url: str, headers: dict[str, str] | None = None) -> httpx.Response:
-        """GET a URL that came from a feed: public hosts only, checked on every redirect.
+    def get_public(
+        self, url: str, headers: dict[str, str] | None = None, max_bytes: int = 2_000_000
+    ) -> httpx.Response:
+        """GET a URL that came from a feed: public hosts only, on every redirect hop.
 
-        Feed items are untrusted, so a link must not reach localhost or your LAN.
+        Feed items are untrusted, so a link must not reach localhost or your LAN. The
+        host is resolved once, checked, and the connection goes to that exact address
+        (TLS is still verified against the hostname), so DNS rebinding can't swap in a
+        private address between the check and the request. Bodies are capped.
         """
         for _ in range(5):
-            if not is_public_url(url):
+            parts = urlsplit(url)
+            ip = resolve_public_ip(url, self._resolve)
+            if ip is None or not parts.hostname:
                 raise SourceError("refused: not a public http(s) address", "blocked")
-            host = urlsplit(url).hostname or ""
-            self._wait_turn(host)
+            self._wait_turn(parts.hostname)
+            literal = f"[{ip}]" if ":" in ip else ip
+            port = f":{parts.port}" if parts.port else ""
+            pinned = urlunsplit((parts.scheme, literal + port, parts.path or "/", parts.query, ""))
+            req_headers = {"Host": parts.netloc.rsplit("@", 1)[-1], **(headers or {})}
+            ext = {"sni_hostname": parts.hostname} if parts.scheme == "https" else {}
             try:
-                resp = self._client.get(url, headers=headers, follow_redirects=False)
+                with self._client.stream(
+                    "GET", pinned, headers=req_headers, extensions=ext, follow_redirects=False
+                ) as resp:
+                    if resp.is_redirect and resp.headers.get("location"):
+                        url = urljoin(url, resp.headers["location"])
+                        continue
+                    if resp.status_code >= 400:
+                        raise SourceError(f"HTTP {resp.status_code}", "error")
+                    body = bytearray()
+                    for chunk in resp.iter_bytes():
+                        body += chunk
+                        if len(body) >= max_bytes:
+                            break
+                    ctype = resp.headers.get("content-type", "application/octet-stream")
+                    return httpx.Response(
+                        resp.status_code,
+                        headers={"content-type": ctype},
+                        content=bytes(body[:max_bytes]),
+                    )
             except httpx.HTTPError as e:
                 raise SourceError(f"network error ({type(e).__name__})", "network") from e
-            if resp.is_redirect and resp.headers.get("location"):
-                url = urljoin(url, resp.headers["location"])
-                continue
-            if resp.status_code >= 400:
-                raise SourceError(f"HTTP {resp.status_code}", "error")
-            return resp
         raise SourceError("too many redirects", "error")
 
     def get_json(self, url: str, **kw: Any) -> Any:
@@ -151,25 +175,33 @@ class PoliteClient:
             raise SourceError("response was not JSON", "bad-data") from e
 
 
-def is_public_url(url: str, resolve: Any = socket.getaddrinfo) -> bool:
+def resolve_public_ip(url: str, resolve: Any = socket.getaddrinfo) -> str | None:
+    """The address to connect to, or None if the URL isn't http(s) to a public host.
+
+    Every address the name resolves to must be public; one private answer refuses it.
+    """
     parts = urlsplit(url)
     if parts.scheme not in ("http", "https") or not parts.hostname:
-        return False
-    host = parts.hostname
+        return None
     try:
-        infos = resolve(host, parts.port or (443 if parts.scheme == "https" else 80))
-    except (socket.gaierror, UnicodeError, OSError):
-        return False
-    if not infos:
-        return False
-    for info in infos:
+        port = parts.port or (443 if parts.scheme == "https" else 80)
+        infos = resolve(parts.hostname, port)
+    except (socket.gaierror, UnicodeError, OSError, ValueError):
+        return None
+    first: str | None = None
+    for info in infos or []:
         try:
-            ip = ipaddress.ip_address(info[4][0].split("%", 1)[0])
+            ip = ipaddress.ip_address(str(info[4][0]).split("%", 1)[0])
         except ValueError:
-            return False
+            return None
         if not ip.is_global or ip.is_multicast:
-            return False
-    return True
+            return None
+        first = first or str(ip)
+    return first
+
+
+def is_public_url(url: str, resolve: Any = socket.getaddrinfo) -> bool:
+    return resolve_public_ip(url, resolve) is not None
 
 
 def _retry_after(resp: httpx.Response) -> float | None:

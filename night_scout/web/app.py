@@ -47,7 +47,20 @@ SOURCE_ICON = {
     "mastodon": "🐘",
     "github": "⌥",
 }
-_md = MarkdownIt("commonmark", {"html": False, "linkify": False}).enable("table")
+# No raw HTML and no images: a remote image URL written by the model (possibly steered by
+# a hostile feed item) would leak data the moment the page renders.
+_md = MarkdownIt("commonmark", {"html": False, "linkify": False}).enable("table").disable("image")
+COOKIE = "night_scout_session"
+
+
+def safe_url(url: str | None) -> str:
+    """Only http(s) links from feeds become hrefs."""
+    u = (url or "").strip()
+    return u if u.lower().startswith(("https://", "http://")) else "#"
+
+
+def nice_day(d: date) -> str:
+    return f"{d:%A, %B} {d.day}"  # %-d isn't portable to Windows
 
 
 def pretty_path(p: str | Path) -> str:
@@ -88,8 +101,18 @@ class Jobs:
             return dict(self.state.get(key, {"state": "idle"}))
 
 
-def create_app(cfg: Config, config_path: Path, port: int = 8765) -> FastAPI:
+def create_app(
+    cfg: Config,
+    config_path: Path,
+    port: int = 8765,
+    session_key: str | None = None,
+    extra_hosts: tuple[str, ...] = (),
+) -> FastAPI:
     store = Store(cfg.db_file())
+    interrupted = store.fail_interrupted_actions()
+    if interrupted:
+        log.warning("marked %d interrupted Try-it run(s) as failed", interrupted)
+    session_key = session_key or secrets.token_urlsafe(24)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -103,10 +126,12 @@ def create_app(cfg: Config, config_path: Path, port: int = 8765) -> FastAPI:
     templates.env.filters["md"] = lambda text: _md.render(text or "")
     templates.env.filters["fromjson"] = lambda s: json.loads(s) if s else {}
     templates.env.globals.update(icon=SOURCE_ICON, action_label=ACTION_LABEL)
+    templates.env.filters["safe_url"] = safe_url
     csrf = secrets.token_urlsafe(24)
     jobs = Jobs()
     state: dict[str, Any] = {"cfg": cfg}
-    allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}", "testserver"}
+    allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}", *extra_hosts}
+    app.state.session_key = session_key
     app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")
 
     @app.middleware("http")
@@ -118,11 +143,31 @@ def create_app(cfg: Config, config_path: Path, port: int = 8765) -> FastAPI:
             origin = request.headers.get("origin")
             if origin and urlsplit(origin).netloc not in allowed_hosts:
                 return Response("Cross-site request refused.", status_code=403)
+        # Every page needs the per-launch session cookie. `night-scout serve` prints a
+        # one-time link that sets it. Other local processes (say, a package being tried
+        # in the sandbox) can reach 127.0.0.1 but can't see the key.
+        if not request.url.path.startswith("/static/"):
+            cookie = request.cookies.get(COOKIE, "")
+            key = request.query_params.get("key")
+            if key is not None and secrets.compare_digest(key, session_key):
+                clean = request.url.path
+                rest = [(k, v) for k, v in request.query_params.multi_items() if k != "key"]
+                if rest:
+                    clean += "?" + "&".join(f"{quote(k)}={quote(v)}" for k, v in rest)
+                redirect = RedirectResponse(clean, status_code=303)
+                redirect.set_cookie(COOKIE, session_key, httponly=True, samesite="strict")
+                return redirect
+            if not secrets.compare_digest(cookie, session_key):
+                return HTMLResponse(
+                    "<h1>Night Scout</h1><p>Open the link printed by "
+                    "<code>night-scout serve</code> in your terminal.</p>",
+                    status_code=401,
+                )
         resp: Response = await call_next(request)
         resp.headers["X-Frame-Options"] = "DENY"
         resp.headers["Referrer-Policy"] = "no-referrer"
         resp.headers["Content-Security-Policy"] = (
-            "default-src 'self'; img-src 'self' https: data:; style-src 'self'; "
+            "default-src 'self'; img-src 'self' data:; style-src 'self'; "
             "script-src 'self'; frame-ancestors 'none'; form-action 'self'"
         )
         return resp
@@ -187,10 +232,8 @@ def create_app(cfg: Config, config_path: Path, port: int = 8765) -> FastAPI:
                     cards.append(card(row))
         run = store.last_run()
         stats = json.loads(run["stats"]) if run else {}
-        day_label = (
-            datetime.strptime(digest["day"], "%Y-%m-%d").strftime("%A, %B %-d")
-            if digest
-            else date.today().strftime("%A, %B %-d")
+        day_label = nice_day(
+            datetime.strptime(digest["day"], "%Y-%m-%d").date() if digest else date.today()
         )
         return render(
             request,

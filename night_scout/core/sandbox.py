@@ -8,6 +8,7 @@ Only ever called after the user clicks Run in sandbox and confirms.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -93,9 +94,23 @@ def choose_mode(cfg: SandboxConfig) -> tuple[str, str | None]:
     return "venv", None
 
 
-def build_script(plan: Plan, mode: str) -> str:
-    """A POSIX sh script: set up the runtime, run each step visibly, stop on failure."""
-    lines = ["set -eu", 'echo "+ sandbox: $(pwd)"']
+TRACE = "[night-scout] "
+_SHELL_ERROR = re.compile(
+    r"command not found|: not found|No such file or directory|Permission denied"
+)
+
+
+def pick_shell(mode: str) -> str:
+    """bash (for pipefail) when we can count on it, else POSIX sh."""
+    if mode == "container":
+        return "bash"  # both default images ship bash
+    return "/bin/bash" if Path("/bin/bash").exists() else "/bin/sh"
+
+
+def build_script(plan: Plan, mode: str, shell: str = "bash") -> str:
+    """Set up the runtime, run each step visibly, stop on the first failure."""
+    strict = "set -euo pipefail" if shell.endswith("bash") else "set -eu"
+    lines = [strict, f'echo "{TRACE}sandbox: $(pwd)"']
     if plan.runtime == "python":
         if mode == "container":
             lines += ["python -m venv .venv", ". .venv/bin/activate"]
@@ -103,10 +118,10 @@ def build_script(plan: Plan, mode: str) -> str:
     else:
         lines += ["node --version", "npm --version", "npm init -y >/dev/null"]
     for cmd in plan.setup:
-        lines += [f"echo {_sh_quote('+ ' + cmd)}", cmd]
+        lines += [f"echo {_sh_quote(TRACE + '$ ' + cmd)}", cmd]
     lines.append(f"echo {_sh_quote(SMOKE_MARK)}")
     for cmd in plan.smoke_test:
-        lines += [f"echo {_sh_quote('+ ' + cmd)}", cmd]
+        lines += [f"echo {_sh_quote(TRACE + '$ ' + cmd)}", cmd]
     return "\n".join(lines) + "\n"
 
 
@@ -155,7 +170,7 @@ def container_args(engine: str, image: str, script: Path, name: str, timeout_s: 
         image,
         "timeout",
         str(timeout_s),
-        "sh",
+        "bash",
         "/night-scout-run.sh",
     ]
 
@@ -185,7 +200,12 @@ def venv_env(workdir: Path, venv_bin: Path | None) -> dict[str, str]:
 
 
 def macos_profile(workdir: Path, readable: list[Path]) -> str:
-    """Seatbelt profile: no reads of home or other volumes, no writes outside the sandbox."""
+    """Seatbelt profile for the venv sandbox on macOS.
+
+    No reads of home or other volumes, no writes outside the sandbox, no talking to
+    services on this machine (the Night Scout UI, Ollama, Docker's socket), and no
+    launching apps or scripting them through LaunchServices / Apple Events.
+    """
     home = Path.home().resolve()
     allow_read = " ".join(f'(subpath "{p}")' for p in [workdir, *readable])
     return "\n".join(
@@ -193,12 +213,41 @@ def macos_profile(workdir: Path, readable: list[Path]) -> str:
             "(version 1)",
             "(allow default)",
             f'(deny file-read* (subpath "{home}") (subpath "/Volumes"))',
-            f"(allow file-read* {allow_read})" if allow_read else "",
+            f"(allow file-read* {allow_read})",
             "(deny file-write*)",
             f'(allow file-write* (subpath "{workdir}") (literal "/dev/null") '
             '(literal "/dev/tty") (regex #"^/dev/fd/"))',
+            '(deny network-outbound (remote ip "localhost:*"))',
+            "(deny network-outbound (remote unix-socket))",
+            # ...except the system DNS resolver, or nothing can be installed.
+            "(allow network-outbound (remote unix-socket (path-literal "
+            '"/private/var/run/mDNSResponder")))',
+            '(deny mach-lookup (global-name "com.apple.coreservices.launchservicesd") '
+            '(global-name "com.apple.coreservices.appleevents"))',
         ]
     )
+
+
+def bwrap_args(bwrap: str, workdir: Path, readable: list[Path]) -> list[str]:
+    """Linux: read-only system, empty home and /tmp, only the sandbox dir writable."""
+    args = [
+        bwrap,
+        "--ro-bind", "/", "/",
+        "--tmpfs", str(Path.home()),
+        "--tmpfs", "/tmp",
+        "--tmpfs", "/mnt",
+        "--tmpfs", "/media",
+        "--dev", "/dev",
+        "--proc", "/proc",
+    ]  # fmt: skip
+    for p in readable:
+        args += ["--ro-bind", str(p), str(p)]
+    args += [
+        "--bind", str(workdir), str(workdir),
+        "--unshare-pid", "--unshare-ipc", "--unshare-uts",
+        "--die-with-parent", "--new-session",
+    ]  # fmt: skip
+    return args
 
 
 def _readable_toolchains() -> list[Path]:
@@ -219,6 +268,13 @@ def judge(output: str, exit_code: int | None, timed_out: bool, expected: str) ->
     if exit_code != 0:
         return False, f"a step failed (exit code {exit_code})"
     smoke = output.split(SMOKE_MARK, 1)[1] if SMOKE_MARK in output else ""
+    # Our own echoed commands, and the shell complaining a command doesn't exist, must
+    # never count as the tool's output.
+    smoke = "\n".join(
+        line
+        for line in smoke.splitlines()
+        if not line.startswith(TRACE) and not _SHELL_ERROR.search(line)
+    )
     if not expected.strip():
         return True, "all steps exited 0 (no expected output was given)"
     if expected.strip().lower() in smoke.lower():
@@ -262,7 +318,7 @@ def run_plan(plan: Plan, cfg: SandboxConfig, scratch_root: Path | None = None) -
     start = time.monotonic()
     try:
         script = workdir / "run.sh"
-        script.write_text(build_script(plan, mode), encoding="utf-8")
+        script.write_text(build_script(plan, mode, pick_shell(mode)), encoding="utf-8")
         if mode == "container":
             assert engine is not None
             image = cfg.container_image if plan.runtime == "python" else NODE_IMAGE
@@ -291,14 +347,29 @@ def run_plan(plan: Plan, cfg: SandboxConfig, scratch_root: Path | None = None) -
                 )
                 venv_bin = workdir / ".venv" / "bin"
             env = venv_env(workdir, venv_bin)
-            args = ["/bin/sh", str(script)]
+            args = [pick_shell("venv"), str(script)]
+            real = workdir.resolve()
             seatbelt = shutil.which("sandbox-exec") if sys.platform == "darwin" else None
+            bwrap = shutil.which("bwrap") if sys.platform.startswith("linux") else None
             if seatbelt:
-                real = workdir.resolve()
                 profile = workdir / "profile.sb"
                 profile.write_text(macos_profile(real, _readable_toolchains()), encoding="utf-8")
                 args = [seatbelt, "-f", str(profile), *args]
                 mode = "venv + macOS sandbox"
+            elif bwrap:
+                args = [*bwrap_args(bwrap, real, _readable_toolchains()), *args]
+                mode = "venv + bubblewrap"
+            elif not cfg.allow_unfenced_venv:
+                return Result(
+                    "none",
+                    False,
+                    None,
+                    False,
+                    0.0,
+                    "No container engine and no OS fence (sandbox-exec or bwrap) here, so a "
+                    "venv run could read your files. Start Docker/Podman, install bubblewrap, "
+                    "or set sandbox.allow_unfenced_venv: true to accept that risk.",
+                )
             output, code, timed_out = _run(args, run_dir, env, cfg.timeout_s)
         passed, reason = judge(output, code, timed_out, plan.expected_output)
         return Result(
@@ -342,9 +413,18 @@ def _run(
         out, _ = proc.communicate(timeout=timeout)
         return out.decode("utf-8", "replace"), proc.returncode, False
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            proc.kill()
-        out, _ = proc.communicate()
-        return out.decode("utf-8", "replace") + "\n[night-scout] timed out, killed\n", None, True
+        pass
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        proc.kill()
+    try:
+        # Bounded: a process that escaped the group (setsid, --daemon) may still hold
+        # the pipe open; don't wait on it forever.
+        out, _ = proc.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+        if proc.stdout:
+            proc.stdout.close()
+        proc.wait(timeout=5)
+        out = b""
+    return out.decode("utf-8", "replace") + "\n[night-scout] timed out, killed\n", None, True

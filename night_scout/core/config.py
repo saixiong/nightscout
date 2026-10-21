@@ -126,6 +126,9 @@ class SandboxConfig(BaseModel):
     prefer: Literal["auto", "container", "venv"] = "auto"
     timeout_s: int = Field(default=300, ge=10, le=3600)
     container_image: str = "python:3.12-slim"
+    # Without a container engine, venv runs are fenced by sandbox-exec (macOS) or bwrap
+    # (Linux). Where neither exists, an unfenced venv can read your files; opt in here.
+    allow_unfenced_venv: bool = False
 
 
 class Config(BaseModel):

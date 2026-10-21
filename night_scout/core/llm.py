@@ -125,6 +125,8 @@ class OllamaClient:
                 body.pop("format")
                 body["messages"] = _with_schema_hint(messages, fmt)
                 resp = self._http.post("/api/chat", json=body)
+        except (httpx.ConnectError, httpx.ConnectTimeout) as e:
+            raise ModelUnavailable(f"Ollama not reachable at {self.cfg.host}") from e
         except httpx.HTTPError as e:
             raise ModelError(f"Ollama request failed: {type(e).__name__}") from e
         if resp.status_code >= 400:

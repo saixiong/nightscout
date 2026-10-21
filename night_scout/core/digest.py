@@ -52,7 +52,7 @@ def render_markdown(
     status_lines: list[str],
     model: str,
 ) -> str:
-    out = [f"# Night Scout · {day.strftime('%A, %b %-d, %Y')}", ""]
+    out = [f"# Night Scout · {day:%A, %b} {day.day}, {day.year}", ""]
     if picks:
         out.append(
             f"{len(picks)} thing{'s' if len(picks) != 1 else ''} worth doing, picked from "

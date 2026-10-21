@@ -69,13 +69,20 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
+    import secrets
+    import webbrowser
+
     import uvicorn
 
     from .web.app import create_app
 
     cfg = load_config(args.config)
-    app = create_app(cfg, args.config, port=args.port)
-    print(f"Night Scout on http://127.0.0.1:{args.port}")
+    key = secrets.token_urlsafe(24)
+    app = create_app(cfg, args.config, port=args.port, session_key=key)
+    url = f"http://127.0.0.1:{args.port}/?key={key}"
+    print(f"Night Scout is running. Open this link (it signs your browser in):\n\n  {url}\n")
+    if not args.no_browser:
+        webbrowser.open(url)
     uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning")
     return 0
 
@@ -123,6 +130,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("serve", help="local web UI on 127.0.0.1")
     s.add_argument("--port", type=int, default=8765)
+    s.add_argument("--no-browser", action="store_true", help="don't open a browser tab")
     s.set_defaults(func=cmd_serve)
 
     s = sub.add_parser("schedule", help="print (or install) the nightly job")

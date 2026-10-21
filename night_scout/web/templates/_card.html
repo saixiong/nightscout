@@ -35,9 +35,9 @@
       {% elif a.kind == 'note_for_project' %}
         <a class="btn" href="/item/{{ row.id }}#action-{{ a.id }}">📝 Note for {{ a.project }}</a>
       {% elif a.kind == 'watch_later' %}
-        <a class="btn ghost" href="{{ row.url }}" target="_blank" rel="noopener noreferrer">⏱ Watch later</a>
+        <a class="btn ghost" href="{{ row.url|safe_url }}" target="_blank" rel="noopener noreferrer">⏱ Watch later</a>
       {% endif %}
     {% endfor %}
-    <a class="btn ghost" href="{{ row.url }}" target="_blank" rel="noopener noreferrer">Open ↗</a>
+    <a class="btn ghost" href="{{ row.url|safe_url }}" target="_blank" rel="noopener noreferrer">Open ↗</a>
   </div>
 </article>

@@ -9,7 +9,8 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
+from datetime import time as dtime
 from pathlib import Path
 
 from .config import Config
@@ -21,7 +22,7 @@ from .fetch import fetch_all
 from .judge import judge_item, propose_actions
 from .llm import LLM, ModelError, ModelUnavailable, OllamaClient
 from .models import utcnow
-from .prefilter import item_text, rank_candidates
+from .prefilter import doc_text, query_texts, rank_candidates
 from .profile import load_profile
 from .sources.youtube import fetch_transcript
 
@@ -122,19 +123,41 @@ def _judge_and_digest(
 
     weights = compute_weights(store)
     cutoff = (utcnow() - timedelta(days=cfg.thresholds.max_age_days)).isoformat()
+    # A run that was killed or lost the model mid-way leaves candidates behind; retry them.
+    store.conn.execute("UPDATE items SET status='new' WHERE status='candidate'")
+    store.conn.commit()
     pending = [r for r in store.items_with_status("new") if r["first_seen"] >= cutoff]
 
     # Embeddings: near-duplicate detection and semantic pre-filter. Optional.
     item_vecs: dict[int, list[float]] | None = None
-    project_vecs: list[list[float]] | None = None
+    query_vecs: list[list[float]] | None = None
     if pending and llm.has_embed_model():
         try:
-            vecs = llm.embed([item_text(r, 600) for r in pending])
+            vecs = llm.embed([doc_text(r) for r in pending])
             item_vecs = {r["id"]: v for r, v in zip(pending, vecs, strict=True)}
-            project_vecs = llm.embed([profile.describe(p) for p in profile.projects])
+            query_vecs = llm.embed(query_texts(profile))
         except ModelError as e:
             log.warning("embeddings unavailable, keyword pre-filter only: %s", e)
             item_vecs = None
+            _status(
+                store,
+                run_id,
+                result,
+                "pipeline:embed",
+                "Embeddings",
+                False,
+                f"unavailable ({e}); keyword pre-filter only",
+            )
+    elif pending:
+        _status(
+            store,
+            run_id,
+            result,
+            "pipeline:embed",
+            "Embeddings",
+            False,
+            f"{cfg.model.embed} not installed; keyword pre-filter only",
+        )
     if item_vecs:
         dups = near_duplicate_groups(item_vecs, cfg.thresholds.near_duplicate)
         by_id = {r["id"]: r for r in pending}
@@ -150,7 +173,7 @@ def _judge_and_digest(
         # re-read so also_seen changes count toward the buzz boost
         pending = [r for r in (store.item(r["id"]) for r in pending) if r is not None]
 
-    ranked = rank_candidates(pending, profile, weights, item_vecs, project_vecs)
+    ranked = rank_candidates(pending, profile, weights, item_vecs, query_vecs)
     chosen = ranked[: cfg.thresholds.max_scored]
     chosen_ids = {c.item_id for c in chosen}
     for c in ranked:
@@ -162,6 +185,7 @@ def _judge_and_digest(
     result.stats["candidates"] = len(chosen)
 
     scored = failed = with_actions = 0
+    lost_model: str | None = None
     t0 = time.monotonic()
     for i, cand in enumerate(chosen, 1):
         row = store.item(cand.item_id)
@@ -176,6 +200,12 @@ def _judge_and_digest(
                 store.update_extra(row["id"], transcript_excerpt=transcript[:6000])
         try:
             judged = judge_item(llm, profile, row, transcript)
+        except ModelUnavailable as e:
+            # Ollama went away. Don't burn the remaining items as failures; they stay
+            # candidates and the next run picks them up again.
+            lost_model = str(e)
+            log.error("model unavailable at item %d/%d: %s", i, len(chosen), e)
+            break
         except ModelError as e:
             failed += 1
             store.set_item_fields(row["id"], status="failed")
@@ -200,6 +230,9 @@ def _judge_and_digest(
         if relevance >= cfg.thresholds.relevance:
             try:
                 actions = propose_actions(llm, profile, row, judged, transcript)
+            except ModelUnavailable as e:
+                lost_model = str(e)
+                break
             except ModelError as e:
                 log.warning("actions failed for item %s: %s", row["id"], e)
                 store.update_extra(row["id"], actions_error=str(e)[:300])
@@ -214,22 +247,37 @@ def _judge_and_digest(
     model_msg = f"scored {scored}/{len(chosen)} in {elapsed / 60:.1f} min"
     if failed:
         model_msg += f", {failed} failed (logged and skipped)"
+    model_ok = lost_model is None and not (scored == 0 and failed > 0)
+    if lost_model:
+        model_msg += (
+            f"; stopped early, model unavailable ({lost_model[:120]}). "
+            "The rest wait for the next run"
+        )
+    elif not model_ok:
+        model_msg += "; every judgement failed"
+    if not model_ok:
+        result.ok = False
     _status(
         store,
         run_id,
         result,
         "pipeline:model",
         f"Gemma ({llm.model_name})",
-        True,
+        model_ok,
         model_msg,
         fetched=len(chosen),
         new=scored,
     )
 
-    weights = compute_weights(store)
+    # The digest covers everything judged today, so a second run the same day adds to
+    # the morning list instead of replacing it.
+    day = today or date.today()
+    midnight = datetime.combine(day, dtime.min).astimezone().astimezone(UTC).isoformat()
     run_row = store.conn.execute("SELECT started_at FROM runs WHERE id=?", (run_id,)).fetchone()
+    day_start = min(midnight, run_row["started_at"])
+    weights = compute_weights(store)
     picks = rank_for_digest(
-        store.scored_since(run_row["started_at"]),
+        store.scored_since(day_start),
         weights,
         cfg.thresholds.relevance,
         cfg.thresholds.digest_size,
@@ -238,7 +286,7 @@ def _judge_and_digest(
         store,
         cfg.digests_dir(),
         run_id,
-        today or date.today(),
+        day,
         picks,
         result.stats.get("new", 0),
         result.status_lines,

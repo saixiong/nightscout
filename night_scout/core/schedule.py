@@ -75,7 +75,8 @@ def cron_line(cfg: Config, config_path: Path) -> str:
     hh, mm = (int(x) for x in cfg.schedule.time.split(":"))
     cmd = " ".join(_q(a) for a in run_command(config_path))
     log = cfg.data_path() / "logs" / "run.log"
-    return f"{mm} {hh} * * * {cmd} >> {_q(str(log))} 2>&1"
+    line = f"{cmd} >> {_q(str(log))} 2>&1".replace("%", "\\%")  # cron treats % as newline
+    return f"{mm} {hh} * * * {line}"
 
 
 def _q(s: str) -> str:
@@ -122,7 +123,7 @@ def _describe(cfg: Config, config_path: Path) -> str:
         )
     if sys.platform == "win32":
         hh, mm = cfg.schedule.time.split(":")
-        cmd = " ".join(run_command(config_path))
+        cmd = subprocess.list2cmdline(run_command(config_path)).replace('"', '\\"')
         return (
             head
             + "Windows: create a daily task in Task Scheduler, or run in PowerShell:\n\n"

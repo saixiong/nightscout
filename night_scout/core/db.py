@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -130,18 +131,34 @@ class Store:
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.executescript(SCHEMA)
         self.conn.commit()
+        # The web UI writes from several threads; serialize transactions so one thread's
+        # commit or rollback can't land in the middle of another's.
+        self._lock = threading.RLock()
 
     def close(self) -> None:
         self.conn.close()
 
     @contextmanager
     def tx(self) -> Iterator[sqlite3.Connection]:
-        try:
-            yield self.conn
-            self.conn.commit()
-        except Exception:
-            self.conn.rollback()
-            raise
+        with self._lock:
+            try:
+                yield self.conn
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
+
+    def fail_interrupted_actions(self) -> int:
+        """Try-its left 'running' by a stopped server can never finish; mark them failed."""
+        with self.tx() as c:
+            cur = c.execute(
+                "UPDATE actions SET status='failed', result=?, updated_at=? WHERE status='running'",
+                (
+                    json.dumps({"reason": "interrupted: Night Scout stopped while it ran"}),
+                    _iso(utcnow()),
+                ),
+            )
+            return cur.rowcount
 
     # -- runs ---------------------------------------------------------------
     def start_run(self) -> int:

@@ -88,8 +88,8 @@ def tasks(cfg: HackerNewsSource | None, max_age_days: int = 3) -> list[SourceTas
                 item = item_from_firebase(data, f"HN {name}")
                 if item and item.extra["points"] >= cfg.min_points:
                     items.append(item)
-            if wanted and failures == len(wanted):
-                raise SourceError("every story fetch failed", "network")
+            if wanted and failures * 2 > len(wanted):
+                raise SourceError(f"{failures} of {len(wanted)} story fetches failed", "network")
             return items
 
         out.append(

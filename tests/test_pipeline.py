@@ -251,3 +251,41 @@ def test_near_duplicates_marked(tmp_path: Path) -> None:
     result = run_once(cfg, store=store, llm=fake_llm(embed=True), today=date(2026, 10, 22))
     assert result.stats["near_duplicates"] == 1
     assert len(store.items_with_status("duplicate")) == 1
+
+
+def test_model_outage_stops_early_and_retries_next_run(tmp_path: Path) -> None:
+    from night_scout.core.llm import ModelUnavailable
+
+    cfg = _cfg(tmp_path)
+    store = Store(cfg.db_file())
+    _seed(store)
+    calls = {"n": 0}
+
+    class Dying(FakeLLM):
+        def chat_json(self, system, user, schema):
+            calls["n"] += 1
+            if calls["n"] >= 2:
+                raise ModelUnavailable("Ollama not reachable")
+            return super().chat_json(system, user, schema)
+
+    llm = Dying({"ItemJudgement": _judge_answer, "ActionProposal": lambda u: {"actions": []}})
+    result = run_once(cfg, store=store, llm=llm, today=date(2026, 10, 22))
+    assert not result.ok
+    assert any("stopped early" in s for s in result.status_lines)
+    assert store.items_with_status("failed") == []  # nothing burned as failed
+    leftover = store.items_with_status("candidate")
+    assert leftover  # picked up again next time
+    again = run_once(cfg, store=store, llm=fake_llm(), today=date(2026, 10, 22))
+    assert again.ok and again.stats["scored"] == len(leftover)
+
+
+def test_second_run_same_day_keeps_the_digest(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    store = Store(cfg.db_file())
+    ids = _seed(store)
+    run_once(cfg, store=store, llm=fake_llm(), today=date.today())
+    first = json.loads(store.latest_digest()["item_ids"])
+    second = run_once(cfg, store=store, llm=fake_llm(), today=date.today())
+    assert second.stats["scored"] == 0  # nothing new
+    assert json.loads(store.latest_digest()["item_ids"]) == first
+    assert ids["rss:1"] in first

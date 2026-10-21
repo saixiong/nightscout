@@ -85,14 +85,36 @@ def test_is_public_url() -> None:
     assert not is_public_url("javascript:alert(1)", resolve=fake("93.184.215.14"))
 
 
-def test_get_public_checks_redirect_hops(monkeypatch) -> None:
-    import night_scout.core.http as h
+def _fake_resolver(table):
+    def resolve(host, port):
+        return [(None, None, None, None, (table[host], port))]
 
-    monkeypatch.setattr(h, "is_public_url", lambda url, resolve=None: "internal" not in url)
+    return resolve
+
+
+def test_get_public_checks_redirect_hops() -> None:
+    seen = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((str(request.url), request.headers["host"]))
         return httpx.Response(302, headers={"location": "http://internal.lan/admin"})
 
     client = PoliteClient(transport=httpx.MockTransport(handler), sleep=lambda s: None)
+    client._resolve = _fake_resolver(
+        {"public.example": "93.184.215.14", "internal.lan": "10.0.0.1"}
+    )
     with pytest.raises(SourceError, match="not a public"):
         client.get_public("https://public.example/x")
+    # connected to the checked address, with the real Host header; never to the LAN host
+    assert seen == [("https://93.184.215.14/x", "public.example")]
+
+
+def test_get_public_caps_body() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"content-type": "text/html"}, content=b"x" * 50_000)
+
+    client = PoliteClient(transport=httpx.MockTransport(handler), sleep=lambda s: None)
+    client._resolve = _fake_resolver({"big.example": "93.184.215.14"})
+    resp = client.get_public("https://big.example/", max_bytes=10_000)
+    assert len(resp.content) < 50_000
+    assert resp.headers["content-type"] == "text/html"

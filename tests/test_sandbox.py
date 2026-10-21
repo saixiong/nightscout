@@ -31,7 +31,7 @@ def test_container_args_are_locked_down(tmp_path: Path) -> None:
     assert args[args.index("python:3.12-slim") + 1 :] == [
         "timeout",
         "120",
-        "sh",
+        "bash",
         "/night-scout-run.sh",
     ]
 
