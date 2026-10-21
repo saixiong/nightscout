@@ -212,7 +212,7 @@ def propose_actions(
             if a.try_it is None or not a.try_it.setup or not a.try_it.smoke_test:
                 continue  # a try_it without a runnable plan is useless; drop it
             plan = a.try_it
-            verdict = check_commands([*plan.setup, *plan.smoke_test])
+            verdict = check_commands([*plan.setup, *plan.smoke_test], smoke=plan.smoke_test)
             detail["plan"] = plan.model_dump()
             if not verdict.ok:
                 status = "refused"

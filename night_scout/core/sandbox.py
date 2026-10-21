@@ -95,13 +95,16 @@ def choose_mode(cfg: SandboxConfig) -> tuple[str, str | None]:
 
 
 TRACE = "[night-scout] "
+# Only the shell's own complaints, e.g. "bash: line 7: foo: command not found" or
+# "sh: 1: foo: not found"; a tool's output that merely contains "not found" still counts.
 _SHELL_ERROR = re.compile(
-    r"command not found|: not found|No such file or directory|Permission denied"
+    r"^(?:/\S+/)?(?:ba|z|da)?sh: (?:line \d+: |\d+: )?\S.*: "
+    r"(?:command not found|not found|No such file or directory|Permission denied)$"
 )
 
 
 def pick_shell(mode: str) -> str:
-    """bash (for pipefail) when we can count on it, else POSIX sh."""
+    """bash when we can count on it, else POSIX sh."""
     if mode == "container":
         return "bash"  # both default images ship bash
     return "/bin/bash" if Path("/bin/bash").exists() else "/bin/sh"
@@ -109,8 +112,9 @@ def pick_shell(mode: str) -> str:
 
 def build_script(plan: Plan, mode: str, shell: str = "bash") -> str:
     """Set up the runtime, run each step visibly, stop on the first failure."""
-    strict = "set -euo pipefail" if shell.endswith("bash") else "set -eu"
-    lines = [strict, f'echo "{TRACE}sandbox: $(pwd)"']
+    # No pipefail: `tool | head -1` would fail on SIGPIPE. A missing tool is caught by
+    # judge(), which ignores the shell's "not found" errors when looking for the marker.
+    lines = ["set -eu", f'echo "{TRACE}sandbox: $(pwd)"']
     if plan.runtime == "python":
         if mode == "container":
             lines += ["python -m venv .venv", ". .venv/bin/activate"]
@@ -199,20 +203,34 @@ def venv_env(workdir: Path, venv_bin: Path | None) -> dict[str, str]:
     return env
 
 
-def macos_profile(workdir: Path, readable: list[Path]) -> str:
+def macos_profile(workdir: Path, readable: list[Path], private: list[Path] | None = None) -> str:
     """Seatbelt profile for the venv sandbox on macOS.
 
-    No reads of home or other volumes, no writes outside the sandbox, no talking to
-    services on this machine (the Night Scout UI, Ollama, Docker's socket), and no
-    launching apps or scripting them through LaunchServices / Apple Events.
+    No reads of home, other volumes or your project folders; no writes outside the
+    sandbox; no talking to services on this machine (the Night Scout UI, Ollama,
+    Docker's socket); no clipboard; no signals to your other processes; no launching
+    apps, LaunchServices, Apple Events, launchctl or the keychain tool.
     """
     home = Path.home().resolve()
     allow_read = " ".join(f'(subpath "{p}")' for p in [workdir, *readable])
+    hidden = " ".join(f'(subpath "{p}")' for p in [home, Path("/Volumes"), *(private or [])])
+    blocked_tools = " ".join(
+        f'(literal "{t}")'
+        for t in (
+            "/bin/launchctl",
+            "/usr/bin/osascript",
+            "/usr/bin/open",
+            "/usr/bin/security",
+            "/usr/bin/pbpaste",
+            "/usr/bin/pbcopy",
+            "/usr/sbin/screencapture",
+        )
+    )
     return "\n".join(
         [
             "(version 1)",
             "(allow default)",
-            f'(deny file-read* (subpath "{home}") (subpath "/Volumes"))',
+            f"(deny file-read* {hidden})",
             f"(allow file-read* {allow_read})",
             "(deny file-write*)",
             f'(allow file-write* (subpath "{workdir}") (literal "/dev/null") '
@@ -223,28 +241,47 @@ def macos_profile(workdir: Path, readable: list[Path]) -> str:
             "(allow network-outbound (remote unix-socket (path-literal "
             '"/private/var/run/mDNSResponder")))',
             '(deny mach-lookup (global-name "com.apple.coreservices.launchservicesd") '
-            '(global-name "com.apple.coreservices.appleevents"))',
+            '(global-name "com.apple.coreservices.appleevents") '
+            '(global-name "com.apple.pasteboard.1"))',
+            "(deny signal)",
+            "(allow signal (target same-sandbox))",
+            f"(deny process-exec {blocked_tools})",
         ]
     )
 
 
-def bwrap_args(bwrap: str, workdir: Path, readable: list[Path]) -> list[str]:
-    """Linux: read-only system, empty home and /tmp, only the sandbox dir writable."""
+def bwrap_args(
+    bwrap: str, workdir: Path, readable: list[Path], private: list[Path] | None = None
+) -> list[str]:
+    """Linux: read-only system, empty home, /tmp and /run (no D-Bus, ssh-agent or
+    docker.sock), only the sandbox dir writable, no capabilities.
+
+    The network stays shared (installs need it), so loopback services are reachable;
+    the web UI's session key keeps the sandbox from driving Night Scout itself.
+    """
     args = [
         bwrap,
         "--ro-bind", "/", "/",
         "--tmpfs", str(Path.home()),
         "--tmpfs", "/tmp",
+        "--tmpfs", "/run",
         "--tmpfs", "/mnt",
         "--tmpfs", "/media",
         "--dev", "/dev",
         "--proc", "/proc",
     ]  # fmt: skip
+    resolv = Path("/etc/resolv.conf")
+    if resolv.is_symlink():  # often points into /run, which is now empty
+        target = resolv.resolve()
+        args += ["--ro-bind-try", str(target), str(target)]
+    for p in private or []:
+        args += ["--tmpfs", str(p)]
     for p in readable:
         args += ["--ro-bind", str(p), str(p)]
     args += [
         "--bind", str(workdir), str(workdir),
         "--unshare-pid", "--unshare-ipc", "--unshare-uts",
+        "--cap-drop", "ALL",
         "--die-with-parent", "--new-session",
     ]  # fmt: skip
     return args
@@ -260,6 +297,10 @@ def _readable_toolchains() -> list[Path]:
             paths.add(Path(found).resolve().parent.parent)
     # Never let an allowance swallow the whole home directory (e.g. a tool in ~/bin).
     return sorted(p for p in paths if p != home and p not in home.parents)
+
+
+def _existing(paths: list[Path] | None) -> list[Path]:
+    return [p.resolve() for p in paths or [] if p.exists()]
 
 
 def judge(output: str, exit_code: int | None, timed_out: bool, expected: str) -> tuple[bool, str]:
@@ -289,8 +330,15 @@ def _clip_log(text: str) -> str:
     return text[:half] + "\n… (log trimmed) …\n" + text[-half:]
 
 
-def run_plan(plan: Plan, cfg: SandboxConfig, scratch_root: Path | None = None) -> Result:
-    verdict = check_commands(plan.commands())
+def run_plan(
+    plan: Plan,
+    cfg: SandboxConfig,
+    scratch_root: Path | None = None,
+    private: list[Path] | None = None,
+) -> Result:
+    """Run a plan in the sandbox. `private` lists extra paths (your projects, Night
+    Scout's data dir) to hide from the venv fences in case they live outside home."""
+    verdict = check_commands(plan.commands(), smoke=plan.smoke_test)
     if not verdict.ok:
         return Result("none", False, None, False, 0.0, verdict.explain(), "", plan.commands())
     if plan.runtime not in ("python", "node"):
@@ -353,11 +401,14 @@ def run_plan(plan: Plan, cfg: SandboxConfig, scratch_root: Path | None = None) -
             bwrap = shutil.which("bwrap") if sys.platform.startswith("linux") else None
             if seatbelt:
                 profile = workdir / "profile.sb"
-                profile.write_text(macos_profile(real, _readable_toolchains()), encoding="utf-8")
+                profile.write_text(
+                    macos_profile(real, _readable_toolchains(), _existing(private)),
+                    encoding="utf-8",
+                )
                 args = [seatbelt, "-f", str(profile), *args]
                 mode = "venv + macOS sandbox"
             elif bwrap:
-                args = [*bwrap_args(bwrap, real, _readable_toolchains()), *args]
+                args = [*bwrap_args(bwrap, real, _readable_toolchains(), _existing(private)), *args]
                 mode = "venv + bubblewrap"
             elif not cfg.allow_unfenced_venv:
                 return Result(

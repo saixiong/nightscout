@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from datetime import time as dtime
 from pathlib import Path
+from typing import Any
 
 from .config import Config
 from .db import Store
@@ -21,12 +22,14 @@ from .feedback import compute_weights
 from .fetch import fetch_all
 from .judge import judge_item, propose_actions
 from .llm import LLM, ModelError, ModelUnavailable, OllamaClient
+from .lock import RunLock
 from .models import utcnow
 from .prefilter import doc_text, query_texts, rank_candidates
 from .profile import load_profile
 from .sources.youtube import fetch_transcript
 
 log = logging.getLogger(__name__)
+MAX_FAILURE_STREAK = 3
 
 
 @dataclass
@@ -45,6 +48,25 @@ def run_once(
     llm: LLM | None = None,
     transcript_fn=fetch_transcript,
     today: date | None = None,
+) -> RunResult:
+    lock = RunLock(cfg.data_path() / "run.lock")
+    if not lock.acquire():
+        return RunResult(
+            run_id=0, ok=False, status_lines=["Run: another night-scout run is already in progress"]
+        )
+    try:
+        return _run_locked(cfg, fetch_only, store, llm, transcript_fn, today)
+    finally:
+        lock.release()
+
+
+def _run_locked(
+    cfg: Config,
+    fetch_only: bool,
+    store: Store | None,
+    llm: LLM | None,
+    transcript_fn: Any,
+    today: date | None,
 ) -> RunResult:
     own_store = store is None
     store = store or Store(cfg.db_file())
@@ -124,8 +146,9 @@ def _judge_and_digest(
     weights = compute_weights(store)
     cutoff = (utcnow() - timedelta(days=cfg.thresholds.max_age_days)).isoformat()
     # A run that was killed or lost the model mid-way leaves candidates behind; retry them.
-    store.conn.execute("UPDATE items SET status='new' WHERE status='candidate'")
-    store.conn.commit()
+    # (The run lock guarantees no other run is scoring them right now.)
+    with store.tx() as conn:
+        conn.execute("UPDATE items SET status='new' WHERE status='candidate'")
     pending = [r for r in store.items_with_status("new") if r["first_seen"] >= cutoff]
 
     # Embeddings: near-duplicate detection and semantic pre-filter. Optional.
@@ -186,6 +209,7 @@ def _judge_and_digest(
 
     scored = failed = with_actions = 0
     lost_model: str | None = None
+    streak: list[int] = []  # consecutive judge failures; a hung model looks like this
     t0 = time.monotonic()
     for i, cand in enumerate(chosen, 1):
         row = store.item(cand.item_id)
@@ -208,10 +232,19 @@ def _judge_and_digest(
             break
         except ModelError as e:
             failed += 1
+            streak.append(row["id"])
             store.set_item_fields(row["id"], status="failed")
             store.update_extra(row["id"], model_error=str(e)[:300])
             log.warning("[%d/%d] judge failed for item %s: %s", i, len(chosen), row["id"], e)
+            if len(streak) >= MAX_FAILURE_STREAK:
+                # Three in a row is the model, not the items: give them back for next time.
+                for item_id in streak:
+                    store.set_item_fields(item_id, status="candidate")
+                failed -= len(streak)
+                lost_model = f"{len(streak)} judgements failed in a row (last: {str(e)[:80]})"
+                break
             continue
+        streak.clear()
         store.save_score(
             row["id"], llm.model_name, judged.summary, judged.per_project, judged.topics
         )
@@ -232,6 +265,7 @@ def _judge_and_digest(
                 actions = propose_actions(llm, profile, row, judged, transcript)
             except ModelUnavailable as e:
                 lost_model = str(e)
+                store.update_extra(row["id"], actions_error=f"model unavailable: {str(e)[:200]}")
                 break
             except ModelError as e:
                 log.warning("actions failed for item %s: %s", row["id"], e)

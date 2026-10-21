@@ -54,11 +54,15 @@ RULES: tuple[Rule, ...] = (
     ),
     _r("eval", r"(?:^|[\s;&|])eval\s", "eval hides what actually runs"),
     _r(
+        "exec-download",
+        r"\bexec\s*\(.*\b(?:urlopen|requests\.get|httpx\.get|urllib)",
+        "runs code it downloads at run time",
+    ),
+    _r(
         "credentials",
         r"\.ssh\b|\.aws\b|\.gnupg|\.netrc|\.pypirc|\.npmrc|\.docker/config|\.kube/config|"
         r"\.config/gcloud|\.git-credentials|\bid_rsa|\bid_ed25519|/etc/shadow|/etc/passwd|"
-        r"Library/Keychains|\bsecurity\s+(?:find|dump)-|"
-        r"(?:^|[\s/=\"'])\.env(?:\.[\w-]+)?(?=$|[\s\"';|>])",
+        r"Library/Keychains|\bsecurity\s+(?:find|dump)-",
         "touches credential or secret files",
     ),
     _r(
@@ -78,7 +82,9 @@ RULES: tuple[Rule, ...] = (
         r"\b(?:npm|pnpm|yarn|bun)\b[^;&|]*(?:\s-g\b|\s--global\b|--location[= ]global)|"
         r"\byarn\s+global\b|"
         r"\b(?:pip[0-9.]*|uv\s+pip)\s+install\b[^;&|]*\s(?:--user|--system|"
-        r"--break-system-packages|--prefix|--root|--target|-t)\b|"
+        r"--break-system-packages|--prefix|--root|--target|-t)(?=[\s=]|$)|"
+        r"\b(?:PIP_USER|PIP_TARGET|PIP_PREFIX|PIP_ROOT|npm_config_global|npm_config_prefix|"
+        r"NPM_CONFIG_PREFIX|NPM_CONFIG_GLOBAL)=|\bnpm\s+config\s+set\s+(?:prefix|global)\b|"
         r"\b(?:brew|apt|apt-get|yum|dnf|pacman|zypper|choco|winget|scoop|nix-env)\s+\S|"
         r"\b(?:port|snap)\s+install\b|\bapk\s+add\b|"
         r"\b(?:pipx|uv\s+tool|cargo|go|gem)\s+install\b",
@@ -153,26 +159,48 @@ def _rm_outside(cmd: str) -> bool:
     return False
 
 
+# These look at shell syntax, so text inside quotes (Python/JS one-liners, URLs) is
+# blanked out first: `python -c "print(a & b)"` isn't a background job.
+SHELL_SYNTAX_RULES = {"background", "parent-dir", "env-dump"}
+_QUOTED = re.compile(r"'[^']*'|\"(?:\\.|[^\"\\])*\"")
+
+
+def _unquoted(cmd: str) -> str:
+    return _QUOTED.sub("''", cmd)
+
+
 def check_command(cmd: str) -> list[str]:
     problems: list[str] = []
+    if any(ord(ch) < 32 and ch != "\t" for ch in cmd):
+        return [f"`{cmd.strip()[:60]}…` contains control characters"]
+    bare = _unquoted(cmd)
     if _rm_outside(cmd):
         problems.append(
             f"`{cmd.strip()[:120]}` recursive/forced delete that can reach outside the "
             "sandbox [rm-outside]"
         )
     for rule in RULES:
-        if rule.pattern.search(cmd):
+        target = bare if rule.name in SHELL_SYNTAX_RULES else cmd
+        if rule.pattern.search(target):
             problems.append(f"`{cmd.strip()[:120]}` {rule.why} [{rule.name}]")
     return problems
 
 
-def check_commands(cmds: list[str]) -> Verdict:
+def check_commands(cmds: list[str], smoke: list[str] | None = None) -> Verdict:
+    """Check every step. `smoke` (the smoke-test steps) must also be verifiable: a step
+    that swallows failure (`|| true`, `|| echo ok`) can't tell us the tool works."""
     problems: list[str] = []
     for c in cmds:
         if not c.strip():
             continue
-        if "\n" in c.strip():
+        if len(c.strip().splitlines()) > 1:
             problems.append(f"`{c.strip()[:60]}…` has embedded newlines; one command per step")
             continue
         problems.extend(check_command(c))
+    for c in smoke or []:
+        if "||" in _unquoted(c):
+            problems.append(
+                f"`{c.strip()[:120]}` hides failures with ||, so it can't prove "
+                "anything [unverifiable]"
+            )
     return Verdict(ok=not problems, problems=problems)

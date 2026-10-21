@@ -10,6 +10,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from .config import Config
 from .db import Store
 from .http import PoliteClient, SourceError
@@ -162,6 +164,18 @@ def write_note(cfg: Config, store: Store, action_id: int, day: date | None = Non
 
 
 # -- Try it ---------------------------------------------------------------------------
+def _private_paths(cfg: Config) -> list[Path]:
+    """Your projects and Night Scout's own data, hidden from the sandbox even when they
+    live outside your home folder."""
+    private = [cfg.data_path(), *(p.resolved() for p in cfg.projects)]
+    try:
+        profile = load_profile(cfg.profile_file())
+    except (FileNotFoundError, yaml.YAMLError, OSError) as e:
+        log.info("profile unreadable, hiding config projects only: %s", e)
+        return private
+    return private + [Path(str(p["path"])).expanduser() for p in profile.projects if p.get("path")]
+
+
 def start_try_it(cfg: Config, store: Store, action_id: int) -> None:
     """Validate, mark running, and run in a background thread. Raises if it can't start."""
     action = store.action(action_id)
@@ -174,13 +188,14 @@ def start_try_it(cfg: Config, store: Store, action_id: int) -> None:
     plan_dict = json.loads(action["detail"]).get("plan")
     if not plan_dict:
         raise ActionError("no plan")
+    private = _private_paths(cfg)
     if not _TRY_LOCK.acquire(blocking=False):
         raise ActionError("another Try-it is running; wait for it to finish")
     store.set_action(action_id, "running", {"log": "", "reason": "starting…"})
 
     def work() -> None:
         try:
-            res = run_plan(Plan.from_dict(plan_dict), cfg.sandbox)
+            res = run_plan(Plan.from_dict(plan_dict), cfg.sandbox, private=private)
             store.set_action(action_id, "passed" if res.passed else "failed", res.to_dict())
         except Exception as e:  # never leave an action stuck in "running"
             log.exception("try-it %s crashed", action_id)

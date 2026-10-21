@@ -150,7 +150,7 @@ def create_app(
             cookie = request.cookies.get(COOKIE, "")
             key = request.query_params.get("key")
             if key is not None and secrets.compare_digest(key, session_key):
-                clean = request.url.path
+                clean = "/" + request.url.path.lstrip("/")  # never //host
                 rest = [(k, v) for k, v in request.query_params.multi_items() if k != "key"]
                 if rest:
                     clean += "?" + "&".join(f"{quote(k)}={quote(v)}" for k, v in rest)
@@ -274,7 +274,7 @@ def create_app(
         if a is None or a["kind"] != "try_it":
             raise HTTPException(404, "No such Try-it")
         plan = Plan.from_dict(json.loads(a["detail"]).get("plan") or {})
-        verdict = check_commands(plan.commands())
+        verdict = check_commands(plan.commands(), smoke=plan.smoke_test)
         try:
             mode, _ = choose_mode(state["cfg"].sandbox)
         except RuntimeError as e:

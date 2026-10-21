@@ -97,7 +97,7 @@ def test_get_public_checks_redirect_hops() -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append((str(request.url), request.headers["host"]))
-        return httpx.Response(302, headers={"location": "http://internal.lan/admin"})
+        return httpx.Response(302, headers={"location": "https://internal.lan/admin"})
 
     client = PoliteClient(transport=httpx.MockTransport(handler), sleep=lambda s: None)
     client._resolve = _fake_resolver(
@@ -118,3 +118,39 @@ def test_get_public_caps_body() -> None:
     resp = client.get_public("https://big.example/", max_bytes=10_000)
     assert len(resp.content) < 50_000
     assert resp.headers["content-type"] == "text/html"
+
+
+def test_get_public_refuses_downgrade_and_sends_sni() -> None:
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.extensions.get("sni_hostname"))
+        return httpx.Response(302, headers={"location": "http://public.example/plain"})
+
+    client = PoliteClient(transport=httpx.MockTransport(handler), sleep=lambda s: None)
+    client._resolve = _fake_resolver({"public.example": "93.184.215.14"})
+    with pytest.raises(SourceError, match="https to http"):
+        client.get_public("https://public.example/x")
+    assert seen == ["public.example"]
+
+
+def test_ipv6_wrapped_private_addresses_refused() -> None:
+    from night_scout.core.http import resolve_public_ip
+
+    for ip in ("::ffff:127.0.0.1", "::127.0.0.1", "64:ff9b::a00:1", "2002:c0a8:0101::1"):
+        assert resolve_public_ip("https://x.example/", _fake_resolver({"x.example": ip})) is None
+    assert resolve_public_ip("https://x.example/", _fake_resolver({"x.example": "2606:4700::1"}))
+
+
+def test_get_public_streaming_cap() -> None:
+    class Chunks(httpx.SyncByteStream):
+        def __iter__(self):
+            for _ in range(100):
+                yield b"y" * 1000
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"content-type": "text/plain"}, stream=Chunks())
+
+    client = PoliteClient(transport=httpx.MockTransport(handler), sleep=lambda s: None)
+    client._resolve = _fake_resolver({"big.example": "93.184.215.14"})
+    assert len(client.get_public("https://big.example/", max_bytes=5_500).content) == 5_500

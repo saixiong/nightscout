@@ -78,7 +78,10 @@ def test_refused_plan_never_runs(tmp_path: Path) -> None:
     assert list(tmp_path.iterdir()) == []
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX sandbox")
+FENCED = sys.platform == "darwin" or bool(__import__("shutil").which("bwrap"))
+
+
+@pytest.mark.skipif(not FENCED, reason="needs sandbox-exec or bwrap")
 def test_venv_run_offline_pass_fail_and_cleanup(tmp_path: Path) -> None:
     ok = Plan(
         "python", ["python -c \"print('setup')\""], ["python -c \"print('OK', 42)\""], "OK 42"
@@ -92,7 +95,7 @@ def test_venv_run_offline_pass_fail_and_cleanup(tmp_path: Path) -> None:
     assert not res.passed and "exit code" in res.reason
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX sandbox")
+@pytest.mark.skipif(not FENCED, reason="needs sandbox-exec or bwrap")
 def test_venv_timeout(tmp_path: Path) -> None:
     slow = Plan("python", [], ['python -c "import time; time.sleep(30)"'], "OK")
     res = run_plan(slow, SandboxConfig(prefer="venv", timeout_s=10), tmp_path)
@@ -112,3 +115,42 @@ def test_macos_sandbox_blocks_home_reads(tmp_path: Path) -> None:
     res = run_plan(sneaky, SandboxConfig(prefer="venv", timeout_s=60), tmp_path)
     assert res.mode == "venv + macOS sandbox"
     assert not res.passed and "PermissionError" in res.log
+
+
+def test_judge_filters_only_the_shells_own_errors() -> None:
+    out = (
+        f"{SMOKE_MARK}\n[night-scout] $ tool --version\n"
+        "bash: line 7: tool: command not found\nsh: 1: tool: not found\n"
+    )
+    assert not judge(out, 0, False, "tool")[0]
+    # a tool's own output that merely mentions "not found" still counts
+    ok = f"{SMOKE_MARK}\nchecked: not found=0, OK\nx: cache: No such file or directory -- ready\n"
+    assert judge(ok, 0, False, "OK")[0]
+    assert judge(ok, 0, False, "ready")[0]
+
+
+def test_bwrap_args_hide_run_home_and_private(tmp_path: Path) -> None:
+    from night_scout.core.sandbox import bwrap_args
+
+    work = tmp_path / "w"
+    args = bwrap_args("/usr/bin/bwrap", work, [Path("/usr/lib/python3")], [Path("/srv/proj")])
+    joined = " ".join(args)
+    for hidden in (str(Path.home()), "/tmp", "/run", "/srv/proj"):
+        assert f"--tmpfs {hidden}" in joined
+    assert "--cap-drop ALL" in joined and "--unshare-pid" in joined
+    # the sandbox dir is bound after the tmpfs mounts, so it stays visible and writable
+    assert args.index("--bind") > args.index("/tmp")
+    assert args[args.index("--bind") + 1] == str(work)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS seatbelt")
+def test_macos_profile_hides_private_paths(tmp_path: Path) -> None:
+    prof = macos_profile(tmp_path, [], [Path("/srv/proj")])
+    assert '(subpath "/srv/proj")' in prof.split("(allow file-read*")[0]
+    assert "(deny signal)" in prof and "com.apple.pasteboard.1" in prof
+
+
+def test_unverifiable_smoke_test_refused(tmp_path: Path) -> None:
+    plan = Plan("python", [], ["tool --version || echo 'tool 1.2.3'"], "tool 1.2.3")
+    res = run_plan(plan, SandboxConfig(prefer="venv"), tmp_path)
+    assert not res.passed and "unverifiable" in res.reason

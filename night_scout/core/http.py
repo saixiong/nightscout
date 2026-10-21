@@ -52,6 +52,9 @@ class PoliteClient:
             follow_redirects=True,
             transport=transport,
         )
+        self._transport = transport
+        self._timeout = timeout
+        self._ua = user_agent(contact)
         self._last: dict[str, float] = {}
         self._max_retries = max_retries
         self._sleep = sleep
@@ -122,6 +125,16 @@ class PoliteClient:
             log.info("retrying %s in %.0fs (%s)", host, backoff, err)
             self._sleep(backoff)
 
+    def _fresh_client(self) -> httpx.Client:
+        """No connection reuse: a TLS session verified for one host must never be reused
+        for a different host that happens to share the pinned IP."""
+        return httpx.Client(
+            headers={"User-Agent": self._ua},
+            timeout=self._timeout,
+            transport=self._transport,
+            limits=httpx.Limits(max_keepalive_connections=0),
+        )
+
     def get_public(
         self, url: str, headers: dict[str, str] | None = None, max_bytes: int = 2_000_000
     ) -> httpx.Response:
@@ -144,11 +157,17 @@ class PoliteClient:
             req_headers = {"Host": parts.netloc.rsplit("@", 1)[-1], **(headers or {})}
             ext = {"sni_hostname": parts.hostname} if parts.scheme == "https" else {}
             try:
-                with self._client.stream(
-                    "GET", pinned, headers=req_headers, extensions=ext, follow_redirects=False
-                ) as resp:
+                with (
+                    self._fresh_client() as fresh,
+                    fresh.stream(
+                        "GET", pinned, headers=req_headers, extensions=ext, follow_redirects=False
+                    ) as resp,
+                ):
                     if resp.is_redirect and resp.headers.get("location"):
-                        url = urljoin(url, resp.headers["location"])
+                        nxt = urljoin(url, resp.headers["location"])
+                        if parts.scheme == "https" and urlsplit(nxt).scheme != "https":
+                            raise SourceError("refused: redirect from https to http", "blocked")
+                        url = nxt
                         continue
                     if resp.status_code >= 400:
                         raise SourceError(f"HTTP {resp.status_code}", "error")
@@ -194,10 +213,25 @@ def resolve_public_ip(url: str, resolve: Any = socket.getaddrinfo) -> str | None
             ip = ipaddress.ip_address(str(info[4][0]).split("%", 1)[0])
         except ValueError:
             return None
-        if not ip.is_global or ip.is_multicast:
+        if not ip.is_global or ip.is_multicast or _tunnels_to_private(ip):
             return None
         first = first or str(ip)
     return first
+
+
+_NAT64 = ipaddress.ip_network("64:ff9b::/96")
+
+
+def _tunnels_to_private(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """IPv6 forms that embed an IPv4 address: judge them by the address inside."""
+    if not isinstance(ip, ipaddress.IPv6Address):
+        return False
+    inner = ip.ipv4_mapped or ip.sixtofour
+    if inner is None and ip in _NAT64:
+        inner = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+    if inner is None and int(ip) >> 32 == 0:  # deprecated IPv4-compatible ::a.b.c.d
+        inner = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+    return inner is not None and not inner.is_global
 
 
 def is_public_url(url: str, resolve: Any = socket.getaddrinfo) -> bool:

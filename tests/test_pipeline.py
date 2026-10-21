@@ -289,3 +289,29 @@ def test_second_run_same_day_keeps_the_digest(tmp_path: Path) -> None:
     assert second.stats["scored"] == 0  # nothing new
     assert json.loads(store.latest_digest()["item_ids"]) == first
     assert ids["rss:1"] in first
+
+
+def test_failure_streak_stops_and_gives_items_back(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    store = Store(cfg.db_file())
+    _seed(store)
+    llm = FakeLLM({"ItemJudgement": lambda u: "ReadTimeout", "ActionProposal": lambda u: {}})
+    result = run_once(cfg, store=store, llm=llm, today=date(2026, 10, 22))
+    assert not result.ok
+    assert any("failed in a row" in s for s in result.status_lines)
+    assert store.items_with_status("failed") == []
+    assert len(store.items_with_status("candidate")) == 4  # 3 handed back + 1 never tried
+
+
+def test_run_lock_blocks_a_second_run(tmp_path: Path) -> None:
+    from night_scout.core.lock import RunLock
+
+    cfg = _cfg(tmp_path)
+    held = RunLock(cfg.data_path() / "run.lock")
+    assert held.acquire()
+    try:
+        result = run_once(cfg, store=Store(cfg.db_file()), llm=fake_llm())
+        assert not result.ok and "already in progress" in result.status_lines[0]
+    finally:
+        held.release()
+    assert run_once(cfg, store=Store(cfg.db_file()), llm=fake_llm()).ok
