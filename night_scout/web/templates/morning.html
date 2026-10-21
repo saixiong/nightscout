@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block main %}
+<section class="hero">
+  <p class="eyebrow">Good morning · {{ day_label }}</p>
+  {% if cards %}
+    <h1>{{ cards|length }} thing{{ 's' if cards|length != 1 }} worth doing</h1>
+    <p class="sub">Picked from {{ stats.get('new', 0) }} new items across {{ statuses|selectattr('ok')|list|length }} sources, judged against your projects by Gemma, on this machine.</p>
+  {% elif digest %}
+    <h1>A quiet morning</h1>
+    <p class="sub">Nothing cleared the bar today. That's the point: no feed to scroll.</p>
+  {% else %}
+    <h1>No digest yet</h1>
+    <p class="sub">Run <code>night-scout run</code> (or schedule it for tonight with <code>night-scout schedule</code>).</p>
+  {% endif %}
+  {% if days|length > 1 %}
+  <div class="days">{% for d in days %}<a href="/?day={{ d }}" class="{{ 'on' if digest and d == digest.day }}">{{ d[5:] }}</a>{% endfor %}</div>
+  {% endif %}
+</section>
+<section class="cards">
+  {% for c in cards %}{% set n = loop.index %}{% include "_card.html" %}{% endfor %}
+</section>
+{% endblock %}

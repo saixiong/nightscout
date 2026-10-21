@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Profile · Night Scout{% endblock %}
+{% block main %}
+<section class="hero small">
+  <p class="eyebrow">Profile</p>
+  <h1>What your projects care about</h1>
+  <p class="sub">Gemma wrote this from each project's README and dependency files. It never leaves this machine. Edit anything.</p>
+</section>
+<section class="projects">
+  {% for p in projects %}
+  <article class="card proj-card">
+    <h2>{{ p.name }}</h2>
+    <p class="summary">{{ p.purpose }}</p>
+    <div class="chips">{% for s in p.stack or [] %}<span class="chip static">{{ s }}</span>{% endfor %}</div>
+    <h4>Key dependencies</h4>
+    <div class="chips">{% for s in p.key_dependencies or [] %}<span class="chip static dep">{{ s }}</span>{% endfor %}</div>
+    <h4>Would want to know</h4>
+    <ul class="wants">{% for s in p.would_want_to_know or [] %}<li>{{ s }}</li>{% endfor %}</ul>
+  </article>
+  {% else %}
+  <p class="muted">No profile yet. Run <code>night-scout profile</code>.</p>
+  {% endfor %}
+</section>
+<section class="panel">
+  <details>
+    <summary>Edit profile.yaml</summary>
+    <form method="post" action="/profile">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <textarea name="profile_yaml" rows="24" spellcheck="false">{{ raw }}</textarea>
+      <div class="row"><button class="btn primary">Save</button></div>
+    </form>
+  </details>
+  <form method="post" action="/profile/regenerate" class="row">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <button class="btn ghost" {{ 'disabled' if job.state == 'running' }}>{{ 'Rebuilding…' if job.state == 'running' else 'Rebuild with Gemma (overwrites edits)' }}</button>
+    {% if job.state == 'error' %}<span class="warn small">{{ job.error }}</span>{% endif %}
+  </form>
+</section>
+{% endblock %}
