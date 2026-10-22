@@ -883,7 +883,7 @@ function renderSources() {
 const LB = () => SRC?.look_back_default || 3, SCOUTABLE_ADD = ["youtube", "website", "newsletter", "podcast", "reddit", "arxiv"], SCOUTABLE_ROW = ["youtube", "rss", "reddit"];
 const splitTerms = v => [...new Set(String(v || "").split(",").map(x => x.trim()).filter(Boolean))].slice(0, 10);
 function scoutChips(r) {
-  const lb = r.look_back_days && r.look_back_days !== LB() ? `<span class="chip">↶ ${r.look_back_days} days</span>` : "";
+  const lb = r.look_back_days && r.look_back_days !== LB() ? `<span class="chip">looks back ${r.look_back_days} day${r.look_back_days === 1 ? "" : "s"}</span>` : "";
   const tm = (r.scout_terms || []).map(x => `<span class="chip term">🔎 ${esc(x)}</span>`).join("");
   return lb || tm ? `<div class="scoutchips">${lb}${tm}</div>` : "";
 }

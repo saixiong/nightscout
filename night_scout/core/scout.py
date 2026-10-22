@@ -192,7 +192,13 @@ def _search_api(
             f"{API_BASE}/videos", params={"part": "snippet", "id": ",".join(ids)}, headers=headers
         ).json()
     except SourceError as e:
-        raise ScoutError(f"YouTube Data API: {scrub(str(e), key)}") from e
+        why = scrub(str(e), key)
+        if any(code in why for code in ("400", "401", "403")):
+            raise ScoutError(
+                f"YouTube rejected the API key or it's out of quota ({why}). "
+                "Check it in Settings → Chat & search, or remove it to use yt-dlp."
+            ) from e
+        raise ScoutError(f"YouTube Data API: {why}") from e
     except (ValueError, KeyError, TypeError) as e:
         raise ScoutError("YouTube Data API sent an answer Night Scout couldn't read.") from e
     by_id = {v.get("id"): v.get("snippet", {}) for v in full.get("items", [])}
