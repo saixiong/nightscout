@@ -4,7 +4,11 @@ from collections.abc import Callable
 from pathlib import Path
 
 import httpx
+import keyring
+import keyring.core
+import keyring.errors
 import pytest
+from keyring.backend import KeyringBackend
 
 from night_scout.core.db import Store
 from night_scout.core.http import PoliteClient
@@ -51,3 +55,34 @@ def store(tmp_path: Path) -> Store:
     s = Store(tmp_path / "scout.db")
     yield s
     s.close()
+
+
+class MemoryKeyring(KeyringBackend):
+    """In-memory keyring so tests never touch the real OS keychain."""
+
+    priority = 1  # type: ignore[assignment]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.store: dict[tuple[str, str], str] = {}
+
+    def get_password(self, service: str, username: str) -> str | None:
+        return self.store.get((service, username))
+
+    def set_password(self, service: str, username: str, password: str) -> None:
+        self.store[(service, username)] = password
+
+    def delete_password(self, service: str, username: str) -> None:
+        if (service, username) not in self.store:
+            raise keyring.errors.PasswordDeleteError("not found")
+        del self.store[(service, username)]
+
+
+@pytest.fixture(autouse=True)
+def memory_keyring() -> MemoryKeyring:
+    previous = keyring.core._keyring_backend
+    kr = MemoryKeyring()
+    keyring.set_keyring(kr)
+    yield kr
+    if previous is not None:
+        keyring.set_keyring(previous)
