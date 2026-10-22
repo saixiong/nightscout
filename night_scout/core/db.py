@@ -99,6 +99,22 @@ CREATE TABLE IF NOT EXISTS source_status (
     PRIMARY KEY (run_id, key)
 );
 
+CREATE TABLE IF NOT EXISTS ideas (
+    -- AUTOINCREMENT: a replaced idea's id is never reused, so a stale page can't act on
+    -- a different idea.
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER,
+    day TEXT NOT NULL,
+    title TEXT NOT NULL,
+    pitch TEXT NOT NULL,
+    why_you TEXT NOT NULL,
+    first_step TEXT NOT NULL,
+    inspired_by TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'new',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ideas_day ON ideas(day);
+
 CREATE TABLE IF NOT EXISTS digests (
     day TEXT PRIMARY KEY,
     run_id INTEGER,
@@ -107,6 +123,32 @@ CREATE TABLE IF NOT EXISTS digests (
     created_at TEXT NOT NULL
 );
 """
+
+
+# Columns added after the first release. Old databases get them on open; old rows stay NULL.
+MIGRATIONS: dict[str, list[tuple[str, str]]] = {
+    "scores": [("impact", "TEXT"), ("matched", "TEXT"), ("next_step", "TEXT")],
+}
+
+IDEA_STATUSES = ("new", "dismissed", "started")
+
+_SCORED_COLS = (
+    "s.summary, s.best_project, s.best_score, s.per_project, s.topics, "
+    "s.impact, s.matched, s.next_step, s.model AS score_model"
+)
+
+
+def migrate(conn: sqlite3.Connection) -> list[str]:
+    """Add any missing columns. Idempotent; returns what it added, e.g. ['scores.impact']."""
+    added: list[str] = []
+    for table, cols in MIGRATIONS.items():
+        have = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        for name, decl in cols:
+            if name not in have:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+                added.append(f"{table}.{name}")
+    conn.commit()
+    return added
 
 
 def _iso(dt: datetime | None) -> str | None:
@@ -131,6 +173,7 @@ class Store:
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.executescript(SCHEMA)
         self.conn.commit()
+        migrate(self.conn)
         # The web UI writes from several threads; serialize transactions so one thread's
         # commit or rollback can't land in the middle of another's.
         self._lock = threading.RLock()
@@ -167,11 +210,56 @@ class Store:
             return int(cur.lastrowid or 0)
 
     def finish_run(self, run_id: int, status: str, stats: dict[str, Any]) -> None:
+        stats = dict(stats)
+        progress = self.run_progress(run_id)
+        if progress is not None and "progress" not in stats:
+            last = progress.get("stage")
+            done_list = list(progress.get("stages_done") or [])
+            if last and last != "done" and last not in done_list:
+                done_list.append(last)
+            stats["progress"] = {
+                **progress,
+                "stage": "done",
+                "stages_done": done_list,
+                "updated_at": _iso(utcnow()),
+            }
         with self.tx() as c:
             c.execute(
                 "UPDATE runs SET finished_at=?, status=?, stats=? WHERE id=?",
                 (_iso(utcnow()), status, json.dumps(stats), run_id),
             )
+
+    def set_run_progress(self, run_id: int, stage: str, done: int, total: int) -> None:
+        """Live progress for the UI, in runs.stats.progress.
+
+        `stages_done` lists the stages finished so far: a stage counts as finished once a
+        later stage reports in (or the run finishes).
+        """
+        with self.tx() as c:
+            row = c.execute("SELECT stats FROM runs WHERE id=?", (run_id,)).fetchone()
+            if row is None:
+                return
+            stats = json.loads(row["stats"] or "{}")
+            prev = stats.get("progress") or {}
+            done_list = list(prev.get("stages_done") or [])
+            last = prev.get("stage")
+            if last and last != stage and last not in done_list:
+                done_list.append(last)
+            stats["progress"] = {
+                "stage": stage,
+                "done": int(done),
+                "total": int(total),
+                "stages_done": done_list,
+                "updated_at": _iso(utcnow()),
+            }
+            c.execute("UPDATE runs SET stats=? WHERE id=?", (json.dumps(stats), run_id))
+
+    def run_progress(self, run_id: int) -> dict[str, Any] | None:
+        row = self.conn.execute("SELECT stats FROM runs WHERE id=?", (run_id,)).fetchone()
+        if row is None:
+            return None
+        progress = json.loads(row["stats"] or "{}").get("progress")
+        return progress if isinstance(progress, dict) else None
 
     def record_source_status(self, run_id: int, st: SourceStatus) -> None:
         with self.tx() as c:
@@ -301,11 +389,16 @@ class Store:
         summary: str,
         per_project: list[dict[str, Any]],
         topics: Iterable[str],
+        impact: str | None = None,
+        matched: list[str] | None = None,
+        next_step: str | None = None,
     ) -> None:
         best = max(per_project, key=lambda p: p["relevance"], default=None)
         with self.tx() as c:
             c.execute(
-                "INSERT OR REPLACE INTO scores VALUES (?,?,?,?,?,?,?,?)",
+                "INSERT OR REPLACE INTO scores(item_id,model,summary,best_project,best_score,"
+                "per_project,topics,scored_at,impact,matched,next_step) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     item_id,
                     model,
@@ -315,6 +408,9 @@ class Store:
                     json.dumps(per_project),
                     json.dumps(list(topics)),
                     _iso(utcnow()),
+                    impact,
+                    json.dumps(matched) if matched is not None else None,
+                    next_step,
                 ),
             )
             c.execute("UPDATE items SET status='scored' WHERE id=?", (item_id,))
@@ -325,16 +421,14 @@ class Store:
     def scored_since(self, iso: str) -> list[sqlite3.Row]:
         """Items scored at or after `iso` (i.e. during one run), best first."""
         return self.conn.execute(
-            "SELECT i.*, s.summary, s.best_project, s.best_score, s.per_project, s.topics, "
-            "s.model AS score_model FROM items i JOIN scores s ON s.item_id=i.id "
+            f"SELECT i.*, {_SCORED_COLS} FROM items i JOIN scores s ON s.item_id=i.id "
             "WHERE s.scored_at>=? ORDER BY s.best_score DESC, i.id",
             (iso,),
         ).fetchall()
 
     def scored_for_run(self, run_id: int) -> list[sqlite3.Row]:
         return self.conn.execute(
-            "SELECT i.*, s.summary, s.best_project, s.best_score, s.per_project, s.topics, "
-            "s.model AS score_model FROM items i JOIN scores s ON s.item_id=i.id "
+            f"SELECT i.*, {_SCORED_COLS} FROM items i JOIN scores s ON s.item_id=i.id "
             "WHERE i.run_id=? ORDER BY s.best_score DESC, i.id",
             (run_id,),
         ).fetchall()
@@ -404,6 +498,50 @@ class Store:
             (item_id,),
         ).fetchone()
         return int(row["value"]) if row else None
+
+    # -- ideas --------------------------------------------------------------
+    def save_ideas(self, run_id: int | None, day: str, ideas: Iterable[Any]) -> list[int]:
+        """Store proposed ideas for `day`. Untouched ('new') ideas from an earlier run the
+        same day are replaced; dismissed and started ones are kept."""
+        now = _iso(utcnow())
+        ids: list[int] = []
+        with self.tx() as c:
+            c.execute("DELETE FROM ideas WHERE day=? AND status='new'", (day,))
+            for idea in ideas:
+                cur = c.execute(
+                    "INSERT INTO ideas(run_id,day,title,pitch,why_you,first_step,inspired_by,"
+                    "status,created_at) VALUES (?,?,?,?,?,?,?,'new',?)",
+                    (
+                        run_id,
+                        day,
+                        idea.title,
+                        idea.pitch,
+                        idea.why_you,
+                        idea.first_step,
+                        json.dumps(list(idea.inspired_by)),
+                        now,
+                    ),
+                )
+                ids.append(int(cur.lastrowid or 0))
+        return ids
+
+    def ideas_for_day(self, day: str) -> list[sqlite3.Row]:
+        return self.conn.execute("SELECT * FROM ideas WHERE day=? ORDER BY id", (day,)).fetchall()
+
+    def idea(self, idea_id: int) -> sqlite3.Row | None:
+        return self.conn.execute("SELECT * FROM ideas WHERE id=?", (idea_id,)).fetchone()
+
+    def recent_idea_titles(self, limit: int = 12) -> list[str]:
+        rows = self.conn.execute(
+            "SELECT title FROM ideas ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [r["title"] for r in rows]
+
+    def set_idea_status(self, idea_id: int, status: str) -> None:
+        if status not in IDEA_STATUSES:
+            raise ValueError(f"unknown idea status {status!r}")
+        with self.tx() as c:
+            c.execute("UPDATE ideas SET status=? WHERE id=?", (status, idea_id))
 
     # -- digests ------------------------------------------------------------
     def save_digest(self, day: str, run_id: int, path: str, item_ids: list[int]) -> None:

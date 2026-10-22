@@ -252,6 +252,22 @@ def heuristic_profile(scan: ProjectScan) -> ProjectProfile:
     )
 
 
+def profile_project(ref: ProjectRef, client: LLM) -> dict[str, Any]:
+    """Scan one project and let the model describe it (heuristics if the model fails).
+
+    Raises FileNotFoundError if the folder is missing.
+    """
+    scan = scan_project(ref)
+    try:
+        prof = client.chat_json(PROFILE_SYSTEM, profile_prompt(scan), ProjectProfile)
+        by = client.model_name
+    except ModelError as e:
+        log.warning("profile for %s fell back to heuristics: %s", scan.name, e)
+        prof = heuristic_profile(scan)
+        by = "heuristic"
+    return {"name": scan.name, "path": scan.path, **prof.model_dump(), "generated_by": by}
+
+
 def build_profile(cfg: Config, llm: LLM | None = None) -> dict[str, Any]:
     own = llm is None
     client: LLM = llm or OllamaClient(cfg.model)
@@ -259,20 +275,10 @@ def build_profile(cfg: Config, llm: LLM | None = None) -> dict[str, Any]:
     try:
         for ref in cfg.projects:
             try:
-                scan = scan_project(ref)
+                projects.append(profile_project(ref, client))
             except FileNotFoundError as e:
                 log.warning("%s", e)
                 continue
-            try:
-                prof = client.chat_json(PROFILE_SYSTEM, profile_prompt(scan), ProjectProfile)
-                by = client.model_name
-            except ModelError as e:
-                log.warning("profile for %s fell back to heuristics: %s", scan.name, e)
-                prof = heuristic_profile(scan)
-                by = "heuristic"
-            projects.append(
-                {"name": scan.name, "path": scan.path, **prof.model_dump(), "generated_by": by}
-            )
     finally:
         if own and isinstance(client, OllamaClient):
             client.close()
@@ -291,6 +297,49 @@ def build_profile_file(cfg: Config, llm: LLM | None = None) -> Path:
         header + yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8"
     )
     return out
+
+
+def append_profile_entry(path: Path, entry: dict[str, Any]) -> None:
+    """Add one project to profile.yaml, leaving every existing byte (and comment) alone.
+
+    The new entry is appended as text to the `projects:` list when that list is the last
+    block in the file (as `night-scout profile` writes it). Any other layout falls back to
+    a full rewrite, which keeps the data but drops comments.
+    """
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            yaml.safe_dump({"projects": [entry]}, sort_keys=False, allow_unicode=True),
+            encoding="utf-8",
+        )
+        return
+    text = path.read_text(encoding="utf-8")
+    data = yaml.safe_load(text) or {}
+    if not isinstance(data, dict):
+        raise ValueError(f"{path} is not a mapping; fix it before adding projects")
+    old = data.get("projects") or []
+    if not isinstance(old, list):
+        raise ValueError(f"{path}: `projects` is not a list; fix it before adding projects")
+    if any(isinstance(p, dict) and p.get("name") == entry["name"] for p in old):
+        raise ValueError(f"profile.yaml already has a project named {entry['name']!r}")
+    block = yaml.safe_dump([entry], sort_keys=False, allow_unicode=True)
+    m = re.search(r"^projects:[ \t]*\n(?P<indent>[ \t]*)- ", text, re.M)
+    candidate = None
+    if m and old:
+        indent = m.group("indent")
+        lines = block.splitlines()
+        appended = "\n".join(indent + ln if ln else ln for ln in lines) + "\n"
+        candidate = text + ("" if text.endswith("\n") else "\n") + appended
+        try:
+            check = yaml.safe_load(candidate) or {}
+        except yaml.YAMLError:
+            check = {}
+        if not isinstance(check, dict) or check != {**data, "projects": [*old, entry]}:
+            candidate = None
+    if candidate is None:
+        data["projects"] = [*old, entry]
+        candidate = yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
+    path.write_text(candidate, encoding="utf-8")
 
 
 @dataclass

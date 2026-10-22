@@ -31,6 +31,8 @@ class Thresholds(BaseModel):
     max_age_days: int = Field(default=3, ge=1)
     # Cosine similarity at or above which two items count as the same story.
     near_duplicate: float = Field(default=0.92, ge=0.5, le=1.0)
+    # New side-project ideas proposed after each run's digest (0 turns them off).
+    ideas: int = Field(default=2, ge=0, le=5)
 
 
 class ProjectRef(BaseModel):
