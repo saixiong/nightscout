@@ -1,12 +1,15 @@
-"""config.yaml: model, thresholds, sources, project dirs and schedule time."""
+"""config.yaml: model, providers, thresholds, sources, project dirs and schedule time."""
 
 from __future__ import annotations
 
+import ipaddress
+import re
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .paths import data_dir
 
@@ -19,6 +22,107 @@ class ModelConfig(BaseModel):
     timeout_s: float = 300.0
     # Keep the model warm between calls in one run, then let Ollama unload it.
     keep_alive: str = "5m"
+
+
+DEFAULT_PROVIDER = "ollama"
+ProviderKind = Literal["ollama", "openai_compatible"]
+RoleName = Literal["judge", "fallback", "chat", "embed"]
+ROLE_NAMES: tuple[RoleName, ...] = ("judge", "fallback", "chat", "embed")
+
+_PROVIDER_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
+
+
+def is_local_host(host: str | None) -> bool:
+    """Loopback only: 'localhost', 127.0.0.0/8 and ::1."""
+    if not host:
+        return False
+    if host.lower() in ("localhost", "localhost."):
+        return True
+    try:
+        return ipaddress.ip_address(host.strip("[]")).is_loopback
+    except ValueError:
+        return False
+
+
+def check_base_url(url: str) -> str:
+    """http(s) only; plain http only for loopback hosts (keys never cross a network unencrypted)."""
+    url = url.strip().rstrip("/")
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise ValueError("base_url must be an http:// or https:// URL")
+    if parts.username or parts.password:
+        raise ValueError("base_url must not contain credentials; store the API key instead")
+    if parts.query or parts.fragment:
+        raise ValueError("base_url must not have a query string or fragment")
+    if parts.scheme == "http" and not is_local_host(parts.hostname):
+        raise ValueError("base_url must use https:// for anything other than this computer")
+    return url
+
+
+class ProviderConfig(BaseModel):
+    """A model server. The API key never lives here: it's in the OS keychain (or api_key_env)."""
+
+    id: str
+    kind: ProviderKind = "openai_compatible"
+    name: str = ""
+    base_url: str
+    api_key_env: str | None = None
+
+    @field_validator("id")
+    @classmethod
+    def _id(cls, v: str) -> str:
+        if not _PROVIDER_ID.match(v):
+            raise ValueError("provider id must be 1-32 chars of a-z, 0-9, '-' or '_'")
+        return v
+
+    @field_validator("base_url")
+    @classmethod
+    def _url(cls, v: str) -> str:
+        return check_base_url(v)
+
+    @field_validator("api_key_env")
+    @classmethod
+    def _env(cls, v: str | None) -> str | None:
+        if v in (None, ""):
+            return None
+        if not _ENV_NAME.match(v):
+            raise ValueError("api_key_env must be an environment variable name")
+        return v
+
+    @property
+    def label(self) -> str:
+        return self.name or self.id
+
+    @property
+    def is_local(self) -> bool:
+        return is_local_host(urlsplit(self.base_url).hostname)
+
+
+def split_ref(ref: str) -> tuple[str, str]:
+    """'<provider_id>/<model>' → (provider_id, model). Only the first '/' splits, so
+    'openrouter/google/gemma-3-27b-it' and 'ollama/gemma4:12b' both work."""
+    provider, sep, model = ref.partition("/")
+    if not sep or not _PROVIDER_ID.match(provider) or not model.strip() or model != model.strip():
+        raise ValueError(f"model reference {ref!r} must look like '<provider_id>/<model>'")
+    return provider, model
+
+
+class Roles(BaseModel):
+    """Which model does which job, as '<provider_id>/<model>'. Unset roles come from `model:`."""
+
+    judge: str | None = None
+    fallback: str | None = None
+    chat: str | None = None
+    embed: str | None = None
+
+    @field_validator("judge", "fallback", "chat", "embed")
+    @classmethod
+    def _ref(cls, v: str | None) -> str | None:
+        if v in (None, ""):
+            return None
+        split_ref(v)
+        return v
 
 
 class Thresholds(BaseModel):
@@ -133,6 +237,9 @@ class SandboxConfig(BaseModel):
 
 class Config(BaseModel):
     model: ModelConfig = Field(default_factory=ModelConfig)
+    # Optional. Without them everything runs on Ollama exactly as `model:` describes.
+    providers: list[ProviderConfig] = Field(default_factory=list)
+    roles: Roles = Field(default_factory=Roles)
     thresholds: Thresholds = Field(default_factory=Thresholds)
     projects: list[ProjectRef] = Field(default_factory=list)
     sources: Sources = Field(default_factory=Sources)
@@ -144,6 +251,55 @@ class Config(BaseModel):
     profile_path: str | None = None
     # Where "Note for project" writes, relative to each project's directory.
     notes_subdir: str = "notes/night-scout"
+
+    @model_validator(mode="after")
+    def _check_providers(self) -> Config:
+        ids = [p.id for p in self.providers]
+        dupes = sorted({i for i in ids if ids.count(i) > 1})
+        if dupes:
+            raise ValueError(f"duplicate provider id(s): {', '.join(dupes)}")
+        known = {p.id for p in self.all_providers()}
+        for role in ROLE_NAMES:
+            ref = getattr(self.roles, role)
+            if ref and split_ref(ref)[0] not in known:
+                raise ValueError(f"roles.{role}: unknown provider {split_ref(ref)[0]!r}")
+        return self
+
+    def all_providers(self) -> list[ProviderConfig]:
+        """Configured providers, plus the built-in 'ollama' one (from `model.host`) unless
+        a provider with that id is configured explicitly."""
+        out = list(self.providers)
+        if not any(p.id == DEFAULT_PROVIDER for p in out):
+            # model_construct: an existing `model.host` keeps loading even if it isn't loopback.
+            builtin = ProviderConfig.model_construct(
+                id=DEFAULT_PROVIDER,
+                kind="ollama",
+                name="Ollama",
+                base_url=self.model.host.rstrip("/"),
+                api_key_env=None,
+            )
+            out.insert(0, builtin)
+        return out
+
+    def provider(self, provider_id: str) -> ProviderConfig:
+        for p in self.all_providers():
+            if p.id == provider_id:
+                return p
+        raise KeyError(f"no provider {provider_id!r}")
+
+    def role_ref(self, role: RoleName) -> str | None:
+        """The effective '<provider>/<model>' for a role; None only for an empty fallback."""
+        ref = getattr(self.roles, role)
+        if ref:
+            return str(ref)
+        m = self.model
+        if role == "judge":
+            return f"{DEFAULT_PROVIDER}/{m.name}"
+        if role == "fallback":
+            return f"{DEFAULT_PROVIDER}/{m.fallback}" if m.fallback else None
+        if role == "chat":
+            return self.role_ref("judge")
+        return f"{DEFAULT_PROVIDER}/{m.embed}"
 
     def data_path(self) -> Path:
         return Path(self.data_dir).expanduser() if self.data_dir else data_dir()
@@ -170,6 +326,10 @@ def load_config(path: Path) -> Config:
 def save_config(cfg: Config, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     data = cfg.model_dump(mode="json", exclude_none=True)
+    # Older configs have neither section; don't grow them just by saving.
+    for key in ("providers", "roles"):
+        if not data.get(key):
+            data.pop(key, None)
     path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
 
 
