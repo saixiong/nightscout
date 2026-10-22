@@ -62,7 +62,10 @@ function freshState() {
   };
 }
 const step = () => STEPS[U.step][0];
-const mark = (...ks) => { (ks.length ? ks : [step()]).forEach(k => { U.dirty[k] = true; }); drawRail(); drawBar(); };
+// Projects, Sources and Interests save the moment you change them; Model's role and the
+// Schedule save on Continue. The rail says "saved" or "changed" accordingly.
+const INSTANT = ["projects", "sources", "interests"];
+const mark = (...ks) => { (ks.length ? ks : [step()]).forEach(k => { U.dirty[k] = true; if (INSTANT.includes(k)) U.saved[k] = true; }); drawRail(); drawBar(); };
 
 /* ---------- model helpers ---------- */
 const ollama = () => D.pv.providers.find(p => p.id === "ollama");
@@ -188,7 +191,7 @@ async function next() {
     if (k === "schedule" && (U.dirty.schedule || !U.rerun)) {
       const r = await api("PUT", "/api/schedule", { time: U.time, nightly: U.nightly });
       if (!r.ok) return failToast(r, "Scheduling");
-      await reload("sc"); U.saved.schedule = true;
+      await Promise.all([reload("sc"), NS.loadBoot()]); chrome("setup"); U.saved.schedule = true;
       const msg = r.data.message || "";
       toast(/said:|isn't supported/.test(msg) ? `<b>Schedule saved, but:</b> ${esc(msg)}` : U.nightly ? `<b>Scheduled.</b> The scout goes out every night at ${esc(U.time)}.` : "<b>Saved.</b> No nightly run.");
     }
@@ -316,7 +319,7 @@ function stepProjects(head) {
     if (!v) return $("#pjPath").focus();
     const r = await api("POST", "/api/projects/add", { path: v });
     if (!r.ok) return toast(`<b>Not added.</b> ${esc(r.error)}`);
-    await reload("setup"); mark("projects", "interests"); drawBody(); drawRail(); drawBar();
+    await reload("setup"); mark("projects"); drawBody(); drawRail(); drawBar();
   };
   $("#pjAdd").onclick = () => add($("#pjPath").value.trim());
   $("#pjPath").onkeydown = e => { if (e.key === "Enter") $("#pjAdd").click(); };
@@ -325,9 +328,10 @@ function stepProjects(head) {
     const n = b.dataset.rm;
     if (U.confirm !== "rm:" + n) { U.confirm = "rm:" + n; drawBody(); setTimeout(() => { if (U.confirm === "rm:" + n) { U.confirm = null; if (step() === "projects") drawBody(); } }, 4000); return; }
     U.confirm = null;
+    const wasProfiled = projRows().find(p => p.name === n)?.profiled;
     const r = await api("DELETE", `/api/projects/${encodeURIComponent(n)}`);
     if (!r.ok) return failToast(r, "Removing projects");
-    await reload("setup", "pj"); mark("projects", "interests"); drawBody(); drawRail(); drawBar();
+    await reload("setup", "pj"); mark("projects", ...(wasProfiled ? ["interests"] : [])); drawBody(); drawRail(); drawBar();
     toast(`<b>${esc(n)}</b> removed from the scout. Its folder isn't touched.`);
   });
   $$("[data-reread]", body).forEach(b => b.onclick = () => {
