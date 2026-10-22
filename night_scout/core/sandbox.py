@@ -114,7 +114,7 @@ def build_script(plan: Plan, mode: str, shell: str = "bash") -> str:
     """Set up the runtime, run each step visibly, stop on the first failure."""
     # No pipefail: `tool | head -1` would fail on SIGPIPE. A missing tool is caught by
     # judge(), which ignores the shell's "not found" errors when looking for the marker.
-    lines = ["set -eu", f'echo "{TRACE}sandbox: $(pwd)"']
+    lines = ["set -eu", f'echo "{TRACE}sandbox ready: $(basename "$(pwd)")"']
     if plan.runtime == "python":
         if mode == "container":
             lines += ["python -m venv .venv", ". .venv/bin/activate"]
