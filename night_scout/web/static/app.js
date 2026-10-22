@@ -67,7 +67,8 @@ const fmtAt = iso => iso ? new Date(iso).toLocaleString("en-US", { month: "short
 const hhmm = iso => iso ? new Date(iso).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false }) : "";
 const runMinutes = run => run && run.finished_at ? ((new Date(run.finished_at) - new Date(run.started_at)) / 60000).toFixed(1) : null;
 const here = () => (B && B.platform === "darwin" ? "this Mac" : "this machine");
-const dayLabel = () => fmtDay(M?.day || new Date().toISOString().slice(0, 10));
+const today = () => { const d = new Date(), z = n => String(n).padStart(2, "0"); return `${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())}`; };
+const dayLabel = () => fmtDay(M?.day || today());
 
 /* tiny markdown: escape first, then headings, lists, fenced code, paragraphs, inline code/bold/em, http(s) links */
 function md(src) {
@@ -629,7 +630,7 @@ function renderMorningState(app, s) {
   const st = M.run?.stats || {};
   const projects = B.projects;
   const left = {
-    running: `<p class="eyebrow">Tonight · ${esc(fmtDay(new Date().toISOString().slice(0, 10)))}</p><h1>The scout<br>is <em>out.</em></h1><p class="sub">Started at ${esc(hhmm(RUN?.run?.started_at))}. Your digest will be here when it's done. Close this tab; it doesn't need you.</p>`,
+    running: `<p class="eyebrow">Tonight · ${esc(fmtDay(today()))}</p><h1>The scout<br>is <em>out.</em></h1><p class="sub">Started at ${esc(hhmm(RUN?.run?.started_at))}. Your digest will be here when it's done. Close this tab; it doesn't need you.</p>`,
     quiet: M.ignored && !(M.cards || []).length
       ? `<p class="eyebrow">Good morning · ${esc(dayLabel())}</p><h1>All <em>clear.</em></h1><p class="sub">You've hidden every pick for today.</p>`
       : `<p class="eyebrow">Good morning · ${esc(dayLabel())}</p><h1>A <em>quiet</em><br>morning.</h1><p class="sub">Nothing cleared the bar today. That's the point: no feed to scroll.</p>`,

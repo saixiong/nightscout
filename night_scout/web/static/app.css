@@ -481,6 +481,13 @@ footer.status .ok { color: var(--good); } footer.status .warn { color: var(--amb
   body[data-page="sources"] .big { position: relative; inset: auto; border-radius: 14px; border: 1px solid var(--edge); }
   body[data-page="sources"] .frame { padding-bottom: 30px; }
   #tour .tip { width: calc(100% - 32px) !important; left: 16px !important; }
+  /* the run / quiet / first-run states show their card inline, like Sources */
+  .frame.morning-state .stage { position: static; opacity: 1; pointer-events: auto; transform: none; margin-top: 16px; }
+  .frame.morning-state .big { position: relative; inset: auto; border-radius: 14px; border: 1px solid var(--edge); }
+  .state-card { margin-top: 0; }
+  .stages li { grid-template-columns: 20px 1fr 54px 64px; gap: 8px; font-size: 13px; }
+  .stages li .muted.small { display: none; }
+  .kv { grid-template-columns: 1fr; gap: 2px; } .kv dd { margin-bottom: 8px; }
 }
 
 /* ===================== app (port of the mockup) ===================== */

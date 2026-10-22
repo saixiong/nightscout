@@ -276,7 +276,7 @@ function renderProviders() {
   $("#addCustom").onclick = customSheet;
 }
 async function runTest(id) {
-  const box = $("#t-" + id); if (!box) return;
+  const box = document.getElementById("t-" + id); if (!box) return;
   box.innerHTML = `<div class="checks"><span class="now">◌ Health</span><span>○ Auth</span><span>○ Chat</span></div>`;
   const r = await api("POST", `/api/providers/${encodeURIComponent(id)}/test`, {});
   if (!r.ok) { box.innerHTML = ""; return failToast(r, "Testing providers from here"); }
