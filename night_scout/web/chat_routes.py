@@ -30,6 +30,7 @@ from ..core.http import PoliteClient, SourceError
 from ..core.llm import ToolChat
 from ..core.profile import load_profile, save_topics
 from ..core.providers import close_llm, make_llm, runs_locally
+from ..core.scout import YOUTUBE_KEY_ID, youtube_key_view
 from ..core.secrets import SecretStoreUnavailable, delete_key, get_key, masked, set_key
 from ..core.tools import BRAVE_KEY_ID, TOOLS, ToolContext, offered
 from ..core.tools.search import web_search
@@ -373,6 +374,7 @@ def register(
             "provider": c.search.provider,
             "searxng_url": c.search.searxng_url,
             "brave": brave_view(),
+            "youtube": youtube_key_view() or {"configured": False},
             "chat_model": model_view(c),
         }
 
@@ -426,6 +428,30 @@ def register(
         if c.search.provider == "brave":  # nothing to search with any more
             c.search = SearchConfig(provider="none", searxng_url=c.search.searxng_url)
             save_cfg(c)
+        return {"ok": True, **search_view()}
+
+    @app.put("/api/search/youtube-key")
+    def put_youtube_key(body: BraveKeyBody) -> Any:
+        """The YouTube Data API key used only to search a channel for Scout key terms."""
+        if YOUTUBE_KEY_ID in {p.id for p in state["cfg"].all_providers()}:
+            raise HTTPException(
+                409,
+                f"A model provider uses the id {YOUTUBE_KEY_ID!r}; rename it in config.yaml first.",
+            )
+        try:
+            set_key(YOUTUBE_KEY_ID, body.key)
+        except SecretStoreUnavailable as e:
+            raise HTTPException(503, str(e)) from e
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        return {"ok": True, **search_view()}
+
+    @app.delete("/api/search/youtube-key")
+    def del_youtube_key() -> Any:
+        try:
+            delete_key(YOUTUBE_KEY_ID)
+        except SecretStoreUnavailable as e:
+            raise HTTPException(503, str(e)) from e
         return {"ok": True, **search_view()}
 
     @app.post("/api/search/test")

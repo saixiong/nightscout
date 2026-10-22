@@ -39,17 +39,21 @@ from ..core import schedule as schedule_mod
 from ..core import setup as setup_mod
 from ..core.config import (
     CONFIG_LOCK,
+    LOOK_BACK_MAX,
+    SCOUTABLE_TYPES,
     Config,
     ProviderConfig,
     Schedule,
+    ScoutSettings,
     Sources,
+    clean_scout_terms,
     load_config,
     save_config,
     split_ref,
 )
 from ..core.db import Store
 from ..core.digest import day_window, split_digest
-from ..core.discover import add_source
+from ..core.discover import AlreadyFollowing, add_source_keyed
 from ..core.feedback import MUTE_AT, MUTE_VOTES, compute_weights
 from ..core.http import PoliteClient, SourceError
 from ..core.ideas import start_project_from_idea
@@ -68,6 +72,7 @@ from ..core.providers import (
 )
 from ..core.safety import check_commands
 from ..core.sandbox import Plan, choose_mode
+from ..core.scout import ScoutError, run_scout, youtube_key_view, ytdlp_command
 from ..core.secrets import (
     SecretStoreUnavailable,
     delete_key,
@@ -77,7 +82,7 @@ from ..core.secrets import (
     masked,
     set_key,
 )
-from ..core.sources import all_tasks, set_source_enabled
+from ..core.sources import all_tasks, configured_tasks, set_source_enabled
 
 log = logging.getLogger(__name__)
 HERE = Path(__file__).parent
@@ -102,6 +107,15 @@ class ToggleBody(BaseModel):
 class AddSourceBody(BaseModel):
     type: str
     value: str
+    # Look back + Scout key terms (feed-style sources only); None = leave as is / default
+    look_back_days: int | None = Field(default=None, ge=1, le=LOOK_BACK_MAX)
+    scout_terms: list[str] | None = None
+
+
+class ScoutBody(BaseModel):
+    key: str
+    look_back_days: int | None = Field(default=None, ge=1, le=LOOK_BACK_MAX)
+    scout_terms: list[str] = []
 
 
 class AddProjectBody(BaseModel):
@@ -1107,6 +1121,9 @@ def create_app(
             "yaml": text,
             "weights": weights_view(),
             "schedule": schedule_info(),
+            "look_back_default": c.thresholds.max_age_days,
+            "youtube_api_key": youtube_key_view() is not None,
+            "ytdlp": ytdlp_command() is not None,
         }
 
     @app.post("/api/sources/yaml")
@@ -1223,19 +1240,86 @@ def create_app(
         save_cfg(c)
         return {"ok": True, "key": body.key, "enabled": body.enabled}
 
-    @app.post("/api/sources/add")
-    @config_writer
-    def add_source_route(body: AddSourceBody) -> Any:
-        c = load_config(config_path)
+    def scout_now(key: str, terms: list[str], look_back: int) -> dict[str, Any]:
+        """The one-off key-term search for a source; never raises (the source is saved)."""
+        c = state["cfg"]
         try:
             with PoliteClient(c.contact) as client:
-                label = add_source(c, body.type, body.value.strip()[:500], client)
+                res = run_scout(c, store, key, terms, client)
+            return {"scout": res.to_dict(look_back)}
+        except ScoutError as e:
+            return {"scout_error": str(e)}
+        except Exception as e:  # a search bug must not lose the saved source
+            log.exception("key-term search failed for %s", key)
+            return {"scout_error": f"The search failed ({type(e).__name__})."}
+
+    def set_scout(c: Config, key: str, look_back: int | None, terms: list[str]) -> list[str]:
+        """Store look back + terms for `key`; returns the terms that are new for it."""
+        if key.split(":", 1)[0] not in SCOUTABLE_TYPES:
+            raise HTTPException(
+                400, "Look back and key terms work on YouTube channels, feeds and subreddits."
+            )
+        try:
+            clean = clean_scout_terms(terms)
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
-        except SourceError as e:
-            raise HTTPException(400, f"Couldn't reach it: {e}") from e
-        save_cfg(c)
-        return {"ok": True, "label": label, "catalog": catalog()}
+        old = c.sources.scout.get(key)
+        was = {t.casefold() for t in (old.terms if old else [])}
+        if look_back is None and not clean:
+            c.sources.scout.pop(key, None)
+        else:
+            c.sources.scout[key] = ScoutSettings(look_back_days=look_back, terms=clean)
+        return [t for t in clean if t.casefold() not in was]
+
+    @app.post("/api/sources/add")
+    def add_source_route(body: AddSourceBody) -> Any:
+        settings = body.look_back_days is not None or body.scout_terms is not None
+        existing = False
+        with CONFIG_LOCK:
+            c = load_config(config_path)
+            try:
+                with PoliteClient(c.contact) as client:
+                    key, label = add_source_keyed(c, body.type, body.value.strip()[:500], client)
+            except AlreadyFollowing as e:
+                # Adding one you already follow with settings updates its settings.
+                if not (settings and e.key and e.key.split(":", 1)[0] in SCOUTABLE_TYPES):
+                    raise HTTPException(400, str(e)) from e
+                key, label, existing = e.key, e.label or e.key, True
+            except ValueError as e:
+                raise HTTPException(400, str(e)) from e
+            except SourceError as e:
+                raise HTTPException(400, f"Couldn't reach it: {e}") from e
+            terms: list[str] = []
+            if settings and key.split(":", 1)[0] in SCOUTABLE_TYPES:
+                # search the terms it didn't have (all of them for a new source)
+                terms = set_scout(c, key, body.look_back_days, body.scout_terms or [])
+            save_cfg(c)
+        look_back = body.look_back_days or state["cfg"].thresholds.max_age_days
+        out: dict[str, Any] = {"ok": True, "label": label, "key": key, "existing": existing}
+        if terms:
+            out.update(scout_now(key, terms, look_back))
+        out["catalog"] = catalog()
+        return out
+
+    @app.post("/api/sources/scout")
+    def scout_route(body: ScoutBody) -> Any:
+        """Change a source's look back / key terms. New terms on a YouTube channel are searched
+        across the whole channel once; on a feed, the feed is checked for them."""
+        with CONFIG_LOCK:
+            c = load_config(config_path)
+            if body.key not in {t.key for t in configured_tasks(c)}:
+                raise HTTPException(400, f"No source with key {body.key!r}.")
+            added = set_scout(c, body.key, body.look_back_days, body.scout_terms)
+            save_cfg(c)
+        out: dict[str, Any] = {"ok": True, "key": body.key}
+        if added:
+            out.update(
+                scout_now(
+                    body.key, added, body.look_back_days or state["cfg"].thresholds.max_age_days
+                )
+            )
+        out["catalog"] = catalog()
+        return out
 
     # -- ideas ----------------------------------------------------------------------------------
     @app.post("/api/ideas/{idea_id}/dismiss")

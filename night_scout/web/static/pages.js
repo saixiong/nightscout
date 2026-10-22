@@ -57,7 +57,7 @@ function steps() {
       ...(idea ? [{ at: `#/morning/idea-${idea.id}`, sel: ".list-h", t: "New project ideas", x: "Side projects Gemma thinks you'd enjoy, inspired by what it read last night and what you already build." }] : []),
     ] : []),
     { at: proj ? `#/projects/${encodeURIComponent(proj)}` : "#/projects", sel: proj ? ".how" : "#addProj", t: proj ? "Projects are the yardstick for Actions" : "Projects are optional", x: proj ? "Actions are judged against what's written here. Sharpen the interests and the scout gets sharper." : "Add a project folder and the scout also writes Actions: what to do about each item for that project." },
-    { at: "#/sources", sel: "#addSrc", t: "Choose what it reads", x: "Websites, YouTube channels, newsletters, Reddit, Hacker News, Bluesky, GitHub and more. Official feeds only." },
+    { at: "#/sources", sel: "#addSrc", t: "Choose what it reads", x: "Websites, YouTube channels, newsletters, Reddit, Hacker News, Bluesky, GitHub and more. Set how far back each reads, and key terms that put matching posts first." },
     ...(chat ? [{ at: "#/digest", sel: "#askNav", t: "Ask anything", x: "Ask in the top bar opens Gemma on any page: how Night Scout works, your setup and past nights, or anything else. It can suggest sources and topics to add (you confirm), and you can paste or attach screenshots, text files and PDFs." }] : []),
     { at: "#/settings/providers", sel: ".roles", t: "Your models, your machine", x: "Everything runs on Ollama locally by default. Cloud providers are optional, and their keys live in your system keychain." },
   ];
@@ -122,7 +122,7 @@ const ROLES = [
   ["fallback", "Fallback judge", "Used if the main model fails or times out."],
   ["embed", "Embeddings", "Finds near-duplicates and pre-filters items. Local only."],
 ];
-const NAV = [["setup", "✨", "Setup", "Walk through it all again"], ["providers", "🔌", "AI Providers", "Models and API keys"], ["chat", "✦", "Chat & search", "Web search provider"], ["schedule", "🌙", "Schedule", "When the scout runs"], ["sandbox", "🧪", "Try-it sandbox", "Safety limits"], ["privacy", "🔒", "Data & privacy", "What's stored where"], ["about", "ⓘ", "About", "Version and licence"]];
+const NAV = [["setup", "✨", "Setup", "Walk through it all again"], ["providers", "🔌", "AI Providers", "Models and API keys"], ["chat", "✦", "Chat & search", "Web search, YouTube key"], ["schedule", "🌙", "Schedule", "When the scout runs"], ["sandbox", "🧪", "Try-it sandbox", "Safety limits"], ["privacy", "🔒", "Data & privacy", "What's stored where"], ["about", "ⓘ", "About", "Version and licence"]];
 const keychain = () => ({ darwin: "macOS Keychain", win32: "Windows Credential Manager" }[B().platform] || "system keychain");
 
 /* What the page shows until GET /api/providers answers: Ollama with the models from config.yaml. */
@@ -176,7 +176,7 @@ function renderOther(sec) {
     sandbox: [["Sandbox here", sb.error ? `unavailable: ${sb.error}` : sb.mode === "container" ? `container (${sb.engine})` : sb.is_mac ? "venv + macOS sandbox" : "venv"],
       ["Prefer", sb.prefer], ["Time limit", `${sb.timeout_s} seconds`], ["Container image", sb.container_image]],
     privacy: [["Data folder", b.data_dir], ["Stored there", "scout.db (items, scores, votes), digests/, profile.yaml"], ["Notes", `written only under ${b.notes_subdir}/ inside a project, when you click Save`],
-      ["Network", "official feeds and public APIs; judging runs on Ollama on this machine unless you pick a cloud model for a role"]],
+      ["Network", "official feeds and public APIs; whole-channel key-term search uses YouTube's API or yt-dlp; judging runs on Ollama on this machine unless you pick a cloud model for a role"]],
     about: [["Version", b.version], ["Licence", "MIT"], ["Model", b.model.name]],
   }[sec] || [];
   $("#setPane").innerHTML = `<a class="back" href="#/settings">‹ Settings</a><h2 class="serif mt0">${esc(title)}</h2>
@@ -223,7 +223,7 @@ async function renderChatSearch() {
       <p class="muted m-4"><b class="hi">Ask</b> in the top bar is for anything else: how Night Scout works, your setup, past nights, or any other question. Gemma can suggest sources and topics, and adds them only when you confirm. Paste or attach screenshots, text files and PDFs to a question.</p></div></div>
     <section class="pcard"><h4 class="sec-h">Chat model</h4>
       <p class="m0"><span class="mono">${esc(m.model || "")}</span> · ${m.local ? `on ${here}` : `via ${esc(m.provider || "")}: questions, context and tool results leave this machine`}</p>
-      <p class="muted small m-4">The chat uses the Judge model unless <code>roles.chat</code> is set in <code>config.yaml</code>. Change models in <a href="#/settings/providers">AI Providers → Model roles</a>.</p></section>
+      <p class="muted small m-4">Pick the chat model in <a href="#/settings/providers">AI Providers → Model roles → Chat</a>. It's the Judge model unless you choose another.</p></section>
     <section class="pcard"><h4 class="sec-h">Web search</h4>
       <div class="srch-opts" role="radiogroup" aria-label="Web search provider">${SEARCH_OPTS.map(opt).join("")}</div>
       ${SS.provider === "searxng" ? `<label class="srch-field">SearXNG address<input type="text" id="sxUrl" placeholder="http://127.0.0.1:8888" value="${esc(SS.url)}" autocomplete="off" spellcheck="false"></label>
@@ -233,13 +233,37 @@ async function renderChatSearch() {
         ${SS.dirty ? `<span class="small muted">Unsaved change</span>` : ""}</div>
       <div class="testline" id="srOut"></div>
     </section>
+    <section class="pcard"><h4 class="sec-h">YouTube channel search <span class="muted small">· optional key</span></h4>
+      <p class="m0 small">When you add a YouTube source with <b>Scout key terms</b>, Night Scout searches the whole channel once. ${SV.youtube?.configured ? "It uses your YouTube Data API key." : "Without a key it uses <b>yt-dlp</b>, which reads YouTube's public pages and can break when YouTube changes them."}</p>
+      ${SV.youtube?.configured ? `<div class="small mt6"><span class="keypill mono">${esc(SV.youtube.masked)}</span> <span class="muted">${SV.youtube.source === "env" ? "from <code>YOUTUBE_API_KEY</code>" : `🔒 in ${esc(keychain())}`}</span>${SV.youtube.source === "env" ? "" : ` <button class="btn ghost danger" id="ytRm">Remove</button>`}</div>`
+        : SV.youtube?.unreadable ? `<p class="small muted m-4">Couldn't read the ${esc(keychain())}. Is it locked?</p>`
+        : `<div class="srch-key mt10"><input type="password" id="ytVal" placeholder="Paste a YouTube Data API v3 key" autocomplete="off"><button class="btn" id="ytSave">Save to ${esc(keychain())}</button></div>
+        <p class="small muted m-4"><a ${NS.ext("https://console.cloud.google.com/apis/library/youtube.googleapis.com")}>Get a free key →</a> · The free quota covers about 100 channel searches a day. The key is only used for these searches.</p>`}
+    </section>
     <section class="pcard lockbox"><b>🔒 What leaves this machine</b>
       <ul><li>Tool calls run from ${here}. A page is fetched only when Gemma asks for it, and only from public addresses (never your network or this computer).</li>
       <li>Web search sends Gemma's search words to the provider you pick here; nothing else.</li>
-      <li>The Brave key lives in the ${esc(keychain())}, never in <code>config.yaml</code>, the database or the logs.</li></ul></section>`;
+      <li>Channel search sends your key terms and the channel to YouTube (with your key, or as yt-dlp's page requests without one).</li>
+      <li>The Brave and YouTube keys live in the ${esc(keychain())}, never in <code>config.yaml</code>, the database or the logs.</li></ul></section>`;
   $$("input[name=srch]", pane).forEach(r => r.onchange = () => { SS.url = $("#sxUrl")?.value ?? SS.url; SS.provider = r.value; SS.dirty = SS.provider !== SV.provider; renderChatSearch(); });
   const url = $("#sxUrl"); if (url) url.oninput = () => { SS.url = url.value; };
   $("#srSave").onclick = saveSearch;
+  const yt = $("#ytSave");
+  if (yt) {
+    const input = $("#ytVal");
+    yt.onclick = async () => {
+      const v = input.value.trim(); if (v.length < 20) return toast("That doesn't look like a YouTube API key.");
+      const r = await api("PUT", "/api/search/youtube-key", { key: v }); input.value = "";
+      if (!r.ok) return failToast(r, "Saving keys from here");
+      SV = r.data; NS.srcStale = true; renderChatSearch(); toast("<b>Key saved.</b> Channel searches now use the YouTube Data API.");
+    };
+    input.onkeydown = e => { if (e.key === "Enter") yt.click(); };
+  }
+  const ytr = $("#ytRm");
+  if (ytr) ytr.onclick = async () => {
+    const r = await api("DELETE", "/api/search/youtube-key"); if (!r.ok) return failToast(r, "Removing keys from here");
+    SV = r.data; NS.srcStale = true; renderChatSearch(); toast(`YouTube key removed from the ${esc(keychain())}. Channel searches use yt-dlp.`);
+  };
   $("#srTest").onclick = testSearch;
   const bk = $("#bkSave");
   if (bk) {

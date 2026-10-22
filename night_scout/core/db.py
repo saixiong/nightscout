@@ -399,6 +399,10 @@ class Store:
         extra.update(updates)
         self.set_item_fields(item_id, extra=json.dumps(extra))
 
+    def requeue_item(self, item_id: int) -> None:
+        """Put a seen-but-unjudged item back in the queue for the next run (Scout key terms)."""
+        self.set_item_fields(item_id, status="new", first_seen=_iso(utcnow()))
+
     def count_items(self) -> int:
         return int(self.conn.execute("SELECT COUNT(*) FROM items").fetchone()[0])
 

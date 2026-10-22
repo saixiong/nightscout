@@ -10,6 +10,7 @@ from .config import Config
 from .db import Store
 from .http import PoliteClient, SourceError
 from .models import SourceStatus, utcnow
+from .scout import tag_matches
 from .sources import SourceTask, all_tasks
 
 log = logging.getLogger(__name__)
@@ -30,7 +31,7 @@ def fetch_all(
     tasks = all_tasks(cfg) if tasks is None else tasks
     own_client = client is None
     client = client or PoliteClient(contact=cfg.contact)
-    cutoff = utcnow() - timedelta(days=cfg.thresholds.max_age_days)
+    now = utcnow()
     statuses: list[SourceStatus] = []
     try:
         if progress:
@@ -48,9 +49,14 @@ def fetch_all(
                 log.exception("%s failed", task.label)
             else:
                 new = 0
+                scout = cfg.sources.scout_for(task.key)
+                days = (scout.look_back_days if scout else None) or cfg.thresholds.max_age_days
+                cutoff = now - timedelta(days=days)
+                terms = scout.terms if scout else []
                 for item in items:
                     if item.published_at and item.published_at < cutoff:
                         continue
+                    tag_matches(item, terms)  # matches are scored first (see pipeline)
                     if store.upsert_item(item, run_id).new:
                         new += 1
                 st = SourceStatus(task.key, task.label, ok=True, fetched=len(items), new=new)

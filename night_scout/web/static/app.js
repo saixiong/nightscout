@@ -757,6 +757,7 @@ const TYPE = {
 let SRC = null;
 function renderSources() {
   chrome("sources"); cur = null;
+  if (NS.srcStale) { SRC = null; NS.srcStale = false; }
   if (!SRC) {
     loading("Loading sources…");
     api("GET", "/api/sources").then(r => { if (!r.ok) return errorView(r); SRC = r.data; if ((location.hash.split("/")[1] || "") === "sources") renderSources(); });
@@ -771,7 +772,7 @@ function renderSources() {
   $("#app").innerHTML = `<div class="frame">
     <div class="col-left">
       <section class="hero"><p class="eyebrow">Sources</p><h1>What the scout<br><em>reads</em> overnight.</h1>
-        <p class="sub">Official feeds and public APIs only. No logins, no scraping.</p></section>
+        <p class="sub">Official feeds and public APIs, no logins. Searching a whole YouTube channel for your key terms uses YouTube's API, or yt-dlp if you haven't added a key.</p></section>
       <div class="panel"><h4 class="sec-h">Last run${SRC.run ? " · " + esc(fmtAt(SRC.run.started_at)) : ""}</h4>
         ${rows.length ? rows.map(r => `<div class="srcrow ${r.ok ? "" : "bad"}"><span class="okdot"></span><span>${esc(r.label)}</span>
           <span class="num">${r.ok ? `${r.fetched} · ${r.new} new` : esc(r.message)}</span></div>`).join("") : `<p class="small muted m0">No runs yet.</p>`}
@@ -808,16 +809,21 @@ function renderSources() {
   pane.innerHTML = Object.entries(groups).map(([t, list]) => `<div class="group">
       <div class="group-h">${badge(t, 1)}<h4>${esc(TYPE[t]?.[0] || t)}</h4><span class="muted">${esc(TYPE[t]?.[1] || "")}</span></div>
       ${list.map(r => { const off = r.enabled === false, st = byKey[r.key], sw = w.source[r.label];
-        return `<div class="feed ${off ? "off" : ""}"><div><div>${esc(r.label)}${sw ? ` <span class="${sw < 0 ? "neg" : "pos"} fs11">${fmt(sw)}</span>` : ""}</div><div class="what">${esc(r.detail)}</div></div>
+        return `<div class="feed ${off ? "off" : ""}"><div><div>${esc(r.label)}${sw ? ` <span class="${sw < 0 ? "neg" : "pos"} fs11">${fmt(sw)}</span>` : ""}</div><div class="what">${esc(r.detail)}</div>${scoutChips(r)}</div>
           <span class="stat">${off ? "off" : !st ? "first fetch tonight" : st.ok ? `${st.new} new last run` : `<span class="neg">${esc(st.message)}</span>`}</span>
-          <button class="toggle ${off ? "" : "on"}" data-k="${esc(r.key)}" title="${off ? "Off" : "On"}"></button></div>`; }).join("")}
+          ${SCOUTABLE_ROW.includes(r.type) ? `<button class="btn ghost sm" data-edit="${esc(r.key)}">${S.editKey === r.key ? "Close" : "Edit"}</button>` : ""}
+          <button class="toggle ${off ? "" : "on"}" data-k="${esc(r.key)}" title="${off ? "Off" : "On"}"></button></div>
+          ${S.editKey === r.key ? `<div class="feededit">${scoutFields(r.type === "rss" ? "website" : r.type, r.look_back_days || LB(), (r.scout_terms || []).join(", "), true)}
+            <div class="row"><button class="btn primary sm" id="eSave">Save</button><button class="btn ghost sm" id="eCancel">Cancel</button></div></div>` : ""}`; }).join("")}
     </div>`).join("") + `
     <div class="group" id="addSrc"><h4 class="sec-h">Add a source</h4>
       <div class="types">${ADD.map(t => `<button class="type ${S.addType === t.k ? "on" : ""} ${t.off ? "off" : ""}" data-k="${t.k}">${badge(t.icon)}<b>${esc(t.name)}</b><small>${esc(t.hint)}</small></button>`).join("")}</div>
       ${(() => { const t = ADD.find(x => x.k === S.addType);
         return t.off ? `<div class="supply mt12"><strong>Not available.</strong> ${esc(t.why)}</div>`
           : `<div class="addform"><input type="text" id="aVal" placeholder="${esc(t.ph)}"><button class="btn primary" id="aGo">Add ${esc(t.name.toLowerCase())}</button></div>
-             <p class="muted small m-8">${esc(t.note)}</p>`; })()}
+             <p class="muted small m-8">${esc(t.note)}</p>
+             ${SCOUTABLE_ADD.includes(t.k) ? scoutFields(t.k, S.addLb || LB(), S.addTerms || "") : ""}`; })()}
+      ${S.scoutResult ? scoutResult(S.scoutResult) : ""}
     </div>`;
   $$(".toggle", pane).forEach(b => b.onclick = async () => {
     const item = SRC.catalog.find(x => x.key === b.dataset.k); if (!item) return;
@@ -828,19 +834,98 @@ function renderSources() {
     toast(`${want ? "<b>On.</b>" : "<b>Off.</b>"} ${esc(item.label)} ${want ? "is back in" : "sits out"} tonight's run.`);
   });
   $$(".type", pane).forEach(b => b.onclick = () => { S.addType = b.dataset.k; renderSources(); $("#addSrc").scrollIntoView({ block: "nearest" }); $("#aVal")?.focus(); });
+  wireScoutFields(pane);
+  $$("[data-edit]", pane).forEach(b => b.onclick = () => { S.editKey = S.editKey === b.dataset.edit ? null : b.dataset.edit; renderSources(); });
+  const eSave = $("#eSave");
+  if (eSave) {
+    $("#eCancel").onclick = () => { S.editKey = null; renderSources(); };
+    eSave.onclick = async () => {
+      const box = eSave.closest(".feededit"), item = SRC.catalog.find(x => x.key === S.editKey);
+      const body = { key: S.editKey, look_back_days: +$(".lbval", box).textContent, scout_terms: splitTerms($(".terms-in", box).value) };
+      eSave.disabled = true;
+      const was = new Set((item.scout_terms || []).map(x => x.toLowerCase()));
+      const fresh = body.scout_terms.filter(x => !was.has(x.toLowerCase()));
+      if (fresh.length) { eSave.textContent = item.type === "youtube" ? "Searching the channel…" : "Checking the feed…"; }
+      const r = await api("POST", "/api/sources/scout", body);
+      eSave.disabled = false;
+      if (!r.ok) { eSave.textContent = "Save"; return failToast(r, "Changing sources from here"); }
+      Object.assign(item, { look_back_days: body.look_back_days, scout_terms: body.scout_terms }); S.editKey = null;
+      const kind = item.type === "rss" ? "website" : item.type;
+      S.scoutResult = r.data?.scout ? { ...r.data.scout, label: item.label, type: kind, edited: true } : null;
+      renderSources();
+      if (r.data?.scout_error) toast(`<b>Saved</b>, but the key-term search didn't run: ${esc(r.data.scout_error)}`);
+      else if (!S.scoutResult) toast(body.scout_terms.length ? `<b>Saved.</b> New posts from ${esc(item.label)} that mention ${esc(body.scout_terms.join(", "))} go first.` : `<b>Saved.</b> ${esc(item.label)} has no key terms.`);
+      if (S.scoutResult) $("#addSrc .scoutres")?.scrollIntoView({ block: "nearest" });
+    };
+  }
+  const srx = $("#srX"); if (srx) srx.onclick = () => { S.scoutResult = null; renderSources(); };
   const goBtn = $("#aGo");
   const add = async () => {
     const t = ADD.find(x => x.k === S.addType), v = $("#aVal").value.trim(); if (!v) return $("#aVal").focus();
+    const body = { type: t.k, value: v };
+    if (SCOUTABLE_ADD.includes(t.k)) { body.look_back_days = S.addLb || LB(); body.scout_terms = splitTerms($("#aTerms")?.value); }
     goBtn.disabled = true; const label = goBtn.textContent;
     if (t.discover) goBtn.textContent = "Looking for a feed…";
-    const r = await api("POST", "/api/sources/add", { type: t.k, value: v });
+    if (body.scout_terms?.length) goBtn.textContent = t.k === "youtube" ? "Searching the channel…" : "Checking the feed…";
+    const r = await api("POST", "/api/sources/add", body);
     goBtn.disabled = false; goBtn.textContent = label;
     if (!r.ok) return failToast(r, "Adding sources from here");
-    SRC = null;
-    toast(`<b>Added.</b> ${esc(r.data?.label || v)} · first fetch tonight at ${esc(B.schedule.time)}.`);
+    SRC = null; S.addTerms = ""; S.addLb = LB();
+    S.scoutResult = r.data?.scout ? { ...r.data.scout, label: r.data.label || v, type: t.k, existing: r.data.existing } : null;
+    if (r.data?.scout_error) toast(`<b>${r.data.existing ? "Updated" : "Added"} ${esc(r.data.label || v)}</b>, but the key-term search didn't run: ${esc(r.data.scout_error)} New posts that mention a term still go first.`);
+    else if (!S.scoutResult) toast(r.data?.existing ? `<b>Updated.</b> You already follow ${esc(r.data.label)}; its look back and key terms are saved.`
+      : `<b>Added.</b> ${esc(r.data?.label || v)} · reads ${body.look_back_days || LB()} days back at ${esc(B.schedule.time)} tonight.`);
     renderSources();
   };
   if (goBtn) { goBtn.onclick = add; $("#aVal").onkeydown = e => { if (e.key === "Enter") add(); }; }
+}
+/* Look back + Scout key terms (feed-type sources) */
+const LB = () => SRC?.look_back_default || 3, SCOUTABLE_ADD = ["youtube", "website", "newsletter", "podcast", "reddit", "arxiv"], SCOUTABLE_ROW = ["youtube", "rss", "reddit"];
+const splitTerms = v => [...new Set(String(v || "").split(",").map(x => x.trim()).filter(Boolean))].slice(0, 10);
+function scoutChips(r) {
+  const lb = r.look_back_days && r.look_back_days !== LB() ? `<span class="chip">↶ ${r.look_back_days} days</span>` : "";
+  const tm = (r.scout_terms || []).map(x => `<span class="chip term">🔎 ${esc(x)}</span>`).join("");
+  return lb || tm ? `<div class="scoutchips">${lb}${tm}</div>` : "";
+}
+function scoutFields(kind, lb, terms, editing) {
+  const yt = kind === "youtube", key = SRC?.youtube_api_key;
+  const lbNote = yt ? "How many days of videos the first night reads (and how far it catches up after nights the scout didn't run). YouTube's feed lists only the 15 newest videos, so a busy channel may not reach that far."
+    : "How many days of posts the first night reads (and how far it catches up after nights the scout didn't run).";
+  const tNote = editing ? (yt ? "New uploads that mention a term go to the front of Gemma's queue. Saving new terms also searches the whole channel for them once." : "New posts that mention a term go to the front of Gemma's queue.")
+    : yt ? "Once, now: searches the whole channel, up to 10 videos per term, any age. Then every night: new uploads that mention a term go to the front of Gemma's queue."
+    : "Once, now: checks every post the feed still lists, any age. Then every night: new posts that mention a term go to the front of Gemma's queue. Feeds only; posts the feed no longer lists can't be searched.";
+  const via = yt ? `<p class="small muted m-4 via">${key ? "🔑 Channel search uses your YouTube Data API key."
+    : SRC?.ytdlp ? `Channel search uses <b>yt-dlp</b>. <a href="#/settings/chat">Add a YouTube API key</a> to use the official API instead.`
+    : `<span class="neg">Channel search needs a <a href="#/settings/chat">YouTube API key</a> or yt-dlp (<code>pip install yt-dlp</code>).</span> New uploads that mention a term still go first.`}</p>` : "";
+  return `<div class="scoutopts">
+    <div class="sopt"><span class="slabel">Look back</span>
+      <span class="stepper"><button type="button" data-lb="-1" ${lb <= 1 ? "disabled" : ""} aria-label="Fewer days">−</button><b class="lbval">${lb}</b><span>day${lb === 1 ? "" : "s"}</span><button type="button" data-lb="1" ${lb >= 14 ? "disabled" : ""} aria-label="More days">+</button></span>
+      <small class="muted">${esc(lbNote)}</small></div>
+    <div class="sopt"><span class="slabel">Scout key terms <small class="muted">comma delimited · optional</small></span>
+      <input type="text" class="terms-in" ${editing ? "" : 'id="aTerms"'} value="${esc(terms)}" placeholder="${yt ? "kling, veo, seedance" : "mcp, ollama"}" autocomplete="off">
+      <small class="muted">${esc(tNote)} A term matches a whole word in the title or description, any case.</small>${via}</div></div>`;
+}
+function wireScoutFields(root) {
+  $$(".scoutopts", root).forEach(box => {
+    const editing = !!box.closest(".feededit");
+    $$("[data-lb]", box).forEach(b => b.onclick = () => {
+      const v = Math.min(14, Math.max(1, +$(".lbval", box).textContent + +b.dataset.lb));
+      if (editing) { $(".lbval", box).textContent = v; $$("[data-lb]", box).forEach(x => x.disabled = (+x.dataset.lb < 0 ? v <= 1 : v >= 14)); return; }
+      S.addLb = v; S.addTerms = $("#aTerms")?.value || ""; const val = $("#aVal")?.value || ""; renderSources(); if ($("#aVal")) $("#aVal").value = val;
+    });
+  });
+  const ti = $("#aTerms"); if (ti) ti.oninput = () => { S.addTerms = ti.value; };
+}
+function scoutResult(x) {
+  const yt = x.type === "youtube", all = x.matches || [];
+  const termRow = t => `<div class="sr-term"><b>🔎 ${esc(t.term)}</b><span>${t.matched} match${t.matched === 1 ? "" : "es"}</span>
+    <span class="muted small">${yt ? `${t.checked} YouTube result${t.checked === 1 ? "" : "s"} checked; ${t.checked - t.matched} didn't mention it` : `${t.checked} posts in the feed checked`}</span></div>`;
+  return `<div class="scoutres"><button class="x" id="srX" title="Dismiss">✕</button>
+    <p class="sr-h"><b>✓ ${esc(x.label)} ${x.existing ? "updated" : x.edited ? "saved" : "added"}.</b> ${x.existing ? "You already follow it, so its look back and key terms were updated. " : ""}${yt ? `Searched the whole channel with ${x.via === "api" ? "the YouTube Data API" : "yt-dlp"}.` : "Checked its feed."}</p>
+    ${x.terms.map(termRow).join("")}
+    ${all.length ? `<div class="sr-list">${all.map(m => `<a class="sr-item" ${NS.ext(m.url)}><span class="mono small muted">${esc(m.date)}</span><span>${esc(m.title)}</span><span class="sr-tags">${m.terms.map(t => `<span class="chip term">${esc(t)}</span>`).join("")}</span></a>`).join("")}</div>` : ""}
+    <p class="small m-8">${x.queued ? `<b>${x.queued} ${yt ? "video" : "post"}${x.queued === 1 ? "" : "s"} go first in the next run (${esc(B.schedule.time)})</b>, ahead of the usual queue. If that's more than the run's ${B.thresholds?.max_scored ?? 40}-item limit, the rest go first the night after.`
+      : all.length ? "Gemma has already read these, so nothing new is queued." : "Nothing matched yet."} From now on, new ${yt ? "uploads" : "posts"} that mention a term go first${x.edited ? "" : `, and the first night reads the last ${x.look_back_days} day${x.look_back_days === 1 ? "" : "s"}`}.</p></div>`;
 }
 const ADD = [
   { k: "website", icon: "rss", name: "Website or blog", hint: "finds its RSS feed", ph: "https://example.com", note: "Paste the site's address. Night Scout looks for its RSS or Atom feed; sites without one can't be followed (no scraping).", discover: 1 },
