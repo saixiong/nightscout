@@ -1,21 +1,30 @@
 # Night Scout
 
-**An overnight scout that turns the internet into next steps for your own projects.**
+**An overnight scout that turns the internet into a short morning Digest, and into next steps
+for your own projects.**
 
 Before bed you do nothing. Overnight, Night Scout reads the feeds you'd otherwise
 doom-scroll: YouTube channels, blogs, Hacker News, Reddit, Bluesky, Mastodon and GitHub
-releases. A local Gemma model, running through Ollama, judges what matters **to the
-projects on your disk**. In the morning you get a short list of things worth doing, each
-with a typed next step: *Try it* in a sandbox, *Research more*, *Note for project*,
-*Watch later*.
+releases. A local Gemma model, running through Ollama, files what matters under **the topics
+you follow**, and, if you point it at the projects on your disk, judges what matters **to
+those projects**. In the morning you get two pages:
 
-It's not another feed of summaries. Most mornings it should be three to seven cards long,
-and some mornings it should say "nothing cleared the bar".
+- **Digest** (opens first): the night's best stories for your topics, 25 at most, each with a
+  plain summary, the key points and the video right in the card. Everything else from the
+  night is one click below, ranked by similarity, so nothing is hidden. No projects needed.
+- **Actions** (with projects): a short list of things worth doing, each labelled Issue,
+  Change, Improvement or Relevant with a typed next step: *Try it* in a sandbox, *Research
+  more*, *Note for project*, *Watch later*. Most mornings it's three to seven cards; some
+  mornings it says "nothing cleared the bar".
 
 ![Night Scout morning view](docs/screenshot-morning.png)
 
-- **Project-aware.** It reads your READMEs and dependency files and builds a small,
-  editable profile of what each project cares about.
+- **Your topics, your words.** Type the topics you follow (in Setup or on the Digest). Gemma
+  files each item under one of them with a strict 0–100 % score; only 80 % and up make the
+  Digest. Weak titles (a list of names, a wall of hashtags, another language) get a short
+  Gemma headline, with the original underneath.
+- **Project-aware, optionally.** Point it at project folders and it reads their READMEs and
+  dependency files into a small, editable profile of what each project cares about.
 - **Action-first.** Every pick is labelled for the project it fits (Issue, Change,
   Improvement or Relevant), shows the profile entry it matched and why, and comes with a
   next step plus one to three concrete actions. Gemma also suggests two small new project
@@ -43,10 +52,11 @@ git clone https://github.com/saixiong/nightscout && cd nightscout
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e .
 
-# 3. Point it at your projects, run once, open the morning view
-night-scout init ~/code/project-a ~/code/project-b
+# 3. Set it up in the browser: model, topics (and projects if you like), sources, schedule
+night-scout setup        # opens http://127.0.0.1:8765 on the setup walkthrough
+#    or from the terminal: night-scout init ~/code/project-a ~/code/project-b
 night-scout run          # first run: ~10-15 min on an M-series Mac
-night-scout serve        # opens http://127.0.0.1:8765
+night-scout serve        # the Digest, Actions and everything else
 
 # 4. Make it nightly
 night-scout schedule             # shows what will be installed
@@ -159,8 +169,9 @@ schedule:
   time: "04:30"
 ```
 
-`profile.yaml` is yours to edit. `night-scout profile` regenerates it from your projects
-(and overwrites your edits).
+`profile.yaml` is yours to edit. The top-level `topics:` list drives the Digest; the
+`projects:` entries drive Actions. `night-scout profile` regenerates the project entries from
+your folders (overwriting your edits to them) and keeps your topics.
 
 ## How it compares
 
