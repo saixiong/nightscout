@@ -15,7 +15,7 @@ from night_scout.core.pipeline import run_once
 from night_scout.core.prefilter import keyword_hits, rank_candidates
 from night_scout.core.profile import Profile
 
-from .fakes import FakeLLM
+from .fakes import NO_DIGEST, FakeLLM
 
 PROFILE = {
     "projects": [
@@ -85,6 +85,7 @@ def _judge_answer(user: str) -> dict:
         # verbatim (case-insensitive) entries survive; the invented one is dropped
         "matched": ["Faster PDF parsers", "pdf parsing.", "blazing speed"],
         "next_step": "Upgrade  pypdf and rerun the tests.",
+        **NO_DIGEST,
     }
 
 

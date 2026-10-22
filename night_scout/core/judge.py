@@ -33,22 +33,17 @@ class ProjectRelevance(BaseModel):
     reason: str = Field(description="One short sentence: why it matters to this project.")
 
 
-class DigestFields(BaseModel):
-    """How the item files into the reader's Digest (by topic). Clamped and checked in code."""
-
-    topic: str | None = Field(
-        default=None, description="Exactly one of the reader's topics, copied as written, or null."
-    )
-    topic_relevance: float = Field(default=0.0, description="0-1, see the scale.")
-    outline: list[str] = Field(
-        default_factory=list, description="3-5 key points, one short line each, from the item."
-    )
-    headline: str | None = Field(
-        default=None, description="Only when told the title is weak; otherwise null."
-    )
+# How the item files into the reader's Digest (by topic); clamped and checked in code. These
+# come LAST in each schema (Gemma writes fields in order, so it reads the item before scoring
+# it) and are all required, null allowed where it says so: with schema-constrained output a
+# field that has a default is optional, and Gemma then leaves it out every time.
+_TOPIC = "Exactly one of the reader's topics, copied as written, or null."
+_TOPIC_REL = "0-1, see the scale."
+_OUTLINE = "3-5 key points, one short line each, from the item."
+_HEADLINE = "Only when told the title is weak; otherwise null."
 
 
-class ItemJudgement(DigestFields):
+class ItemJudgement(BaseModel):
     summary: str = Field(description="2-3 plain sentences on what this item actually says.")
     kind: ItemKind
     topics: list[str] = Field(description="1-4 short lowercase topic tags.")
@@ -59,6 +54,10 @@ class ItemJudgement(DigestFields):
         description="0-3 entries copied verbatim from that project's Interests or Wants to know."
     )
     next_step: str = Field(description="One imperative sentence for that project.")
+    topic: str | None = Field(description=_TOPIC)
+    topic_relevance: float = Field(description=_TOPIC_REL)
+    outline: list[str] = Field(description=_OUTLINE)
+    headline: str | None = Field(description=_HEADLINE)
 
     @field_validator("impact", mode="before")
     @classmethod
@@ -72,12 +71,16 @@ _CODE_START = re.compile(
 )
 
 
-class TopicJudgement(DigestFields):
+class TopicJudgement(BaseModel):
     """The judgement when there are no projects: Digest only."""
 
     summary: str = Field(description="2-3 plain sentences on what this item actually says.")
     kind: ItemKind
     topics: list[str] = Field(description="1-4 short lowercase topic tags.")
+    topic: str | None = Field(description=_TOPIC)
+    topic_relevance: float = Field(description=_TOPIC_REL)
+    outline: list[str] = Field(description=_OUTLINE)
+    headline: str | None = Field(description=_HEADLINE)
 
 
 class TryItPlan(BaseModel):
@@ -288,7 +291,9 @@ def _match_project(name: str | None, names: list[str]) -> str | None:
     return None
 
 
-def _digest_fields(judged: Judged, out: DigestFields, profile: Profile, title: str) -> Judged:
+def _digest_fields(
+    judged: Judged, out: ItemJudgement | TopicJudgement, profile: Profile, title: str
+) -> Judged:
     """Copy the Digest fields over, trusting nothing: topic must be one of the reader's."""
     names = profile.digest_topics
     topic = next(

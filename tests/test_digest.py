@@ -349,3 +349,14 @@ def test_bootstrap_reports_topics_and_setup_done(denv) -> None:
     b = client.get("/api/bootstrap").json()
     assert b["topics"] == TOPICS and b["projects"] == []
     assert b["setup"]["needed"] is False and b["thresholds"]["digest_bar"] == 0.8
+
+
+def test_digest_fields_are_required_in_both_schemas() -> None:
+    """Regression (Oct 22 E2E): with defaults these were optional, so schema-constrained Gemma
+    left them out and every item landed in no topic. They must be required, and come last."""
+    from night_scout.core.judge import ItemJudgement, TopicJudgement
+
+    for schema in (ItemJudgement, TopicJudgement):
+        req = schema.model_json_schema()["required"]
+        assert {"topic", "topic_relevance", "outline", "headline"} <= set(req)
+        assert req.index("summary") < req.index("topic")

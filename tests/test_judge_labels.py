@@ -12,7 +12,7 @@ from night_scout.core.judge import JUDGE_SYSTEM, ItemJudgement, judge_item, vali
 from night_scout.core.pipeline import run_once
 from night_scout.core.profile import Profile
 
-from .fakes import FakeLLM
+from .fakes import NO_DIGEST, FakeLLM
 from .test_pipeline import PROFILE, _cfg, _judge_answer, _seed, fake_llm
 
 PDF = PROFILE["projects"][0]
@@ -74,6 +74,7 @@ def test_impact_must_be_one_of_four() -> None:
         "projects": [],
         "matched": [],
         "next_step": "x",
+        **NO_DIGEST,
     }
     assert ItemJudgement.model_validate({**base, "impact": " Issue "}).impact == "issue"
     with pytest.raises(ValidationError):
