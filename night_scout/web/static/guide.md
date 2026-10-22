@@ -77,7 +77,15 @@ Night Scout only uses official feeds and public APIs. No logins, no scraping.
 
 # Asking Gemma
 
-**✦ Ask** opens a chat drawer about the day's Digest or one story. Gemma looks things up before it answers: it can search everything the scout fetched that night, read a web page, pull a YouTube transcript and search Hacker News. Each lookup shows up in the drawer as it happens; click one to see what came back. Answers link the pages they used and say plainly when something couldn't be checked.
+**Ask** in the top bar opens a chat with Gemma on any page: docked beside the Digest, floating elsewhere, full screen on a phone. Ask how Night Scout works, about your setup and past runs, about anything the scout has fetched on any night, or about anything else. Gemma looks things up before it answers: the Guide, your setup, every night's items, and the web tools below. When an answer mentions a page of the app, such as **Sources ›**, click it to go there.
+
+**Ask about tonight** in the Digest, and **Ask** on each story, open the same chat about that Digest or that one story. From there, **anything else** switches to the general chat. Each lookup shows up in the drawer as it happens; click one to see what came back. Answers link the pages they used and say plainly when something couldn't be checked.
+
+**Adding from chat.** Ask Gemma to follow a channel or to add a topic and it shows a card under its answer with **Add source** or **Add topic**, and **Not now**. Nothing changes until you click. A source is checked first, so a card only appears for one that resolves, labelled with its real name.
+
+**Attachments.** Paste a screenshot into the question box, click 📎, or drop files onto the drawer: images, text files (up to 200 KB) and PDFs (up to 10 MB), up to four per question. Images are shrunk on your machine first, and a PDF's text is read on your machine. They go to the chat model with your question, so they leave your machine only if the chat model is a cloud provider. Click a thumbnail to see it full size, or the text Gemma read.
+
+**＋ New chat** starts a fresh conversation; the drawer otherwise keeps one running conversation for each thing you ask about.
 
 Web search is optional and off by default. Turn it on in **Settings → Chat & search** with your own SearXNG instance (no key; enable JSON output in its `settings.yml`) or a Brave Search API key, which is kept in your system keychain. Only Gemma's search words go to that service.
 

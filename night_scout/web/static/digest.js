@@ -148,7 +148,7 @@ function drawFeed(scrollTo) {
   const label = V.view === "rest" ? `Everything else · ${all.length} item${all.length === 1 ? "" : "s"}, ranked by similarity` : V.filter === "saved" ? `Saved · ${all.length}` : `${V.filter === "all" ? "All topics" : esc(V.filter)} · ${all.length} stor${all.length === 1 ? "y" : "ies"}`;
   const latest = D.days[0] === D.day;
   feed.innerHTML = `<div class="feedhead"><span class="fh-l">${V.view === "rest" ? `<button class="btn ghost sm" id="backDigest">‹ Digest</button>` : `<a class="back" href="#/digest">‹ Digest</a>`}<b>${label}</b><span class="muted">${all.length ? `${start + 1}–${Math.min(start + per, all.length)}` : ""}</span></span>${pager}
-      ${hasChat() ? `<button class="btn ghost sm" id="askAll">✦ Ask about ${V.view === "rest" ? "these" : latest ? "tonight" : "this Digest"}</button>` : ""}</div>
+      ${hasChat() ? `<button class="btn ghost sm" id="askAll">${NS.scoutImg(16)} Ask about ${V.view === "rest" ? "these" : latest ? "tonight" : "this Digest"}</button>` : ""}</div>
     ${shown.map(i => story(i)).join(`<hr class="sep">`) || `<div class="state-card"><h2 class="serif">Nothing here.</h2><p class="summary">${V.view === "rest" ? "Every item made the Digest." : `Open <b>Everything else</b> on the left for the rest of ${latest ? "tonight" : "that night"}.`}</p></div>`}
     ${pager ? `<div class="feedfoot">${pager}</div>` : ""}`;
   $$("[data-pg]", feed).forEach(b => b.onclick = () => { V.page = +b.dataset.pg; V.cur = null; history.replaceState(null, "", V.view === "rest" ? "#/digest/more" : "#/digest"); drawFeed(); feed.scrollTop = 0; markList(); });
@@ -187,7 +187,7 @@ function story(i) {
         <button class="vote ${i.saved ? "on" : ""}" data-a="save" data-id="${i.id}" title="${i.saved ? "Saved: click to unsave" : "Save for later"}">🔖</button>
         <button class="vote" data-a="less" data-id="${i.id}" title="Not for me: hide it and rank items like it lower">👎</button>
         <button class="vote" data-a="mute" data-id="${i.id}" title="Mute ${esc(i.source_name)}">🔇</button>
-        ${hasChat() ? `<button class="vote ask" data-a="ask" data-id="${i.id}" title="Ask Gemma about this story">✦ Ask</button>` : ""}
+        ${hasChat() ? `<button class="vote ask" data-a="ask" data-id="${i.id}" title="Ask Gemma about this story">${NS.scoutImg(16)} Ask</button>` : ""}
       </div>
       ${isWeb(i.url) ? `<a class="open" ${ext(i.url)}>Open ↗</a>` : ""}
     </div>

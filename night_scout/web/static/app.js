@@ -14,6 +14,8 @@ const badge = (src, lg) => `<span class="src src-${esc(src)}${lg ? " lg" : ""}" 
 /* an href only for http(s) URLs (the server already sends null for anything else) */
 const isWeb = u => typeof u === "string" && /^https?:\/\//i.test(u);
 const ext = u => isWeb(u) ? `href="${esc(u)}" target="_blank" rel="noopener noreferrer"` : "";
+/* the scout: the Ask icon (top bar, chat drawer, Ask buttons) */
+const scoutImg = (size = 18, cls = "scout-ic") => `<img class="${cls}" src="/static/scout.svg" width="${size}" height="${size}" alt="">`;
 
 /* widths and animation delays from data attributes (CSP: no style="" in HTML strings) */
 function fx(root) {
@@ -1062,7 +1064,7 @@ async function kickRun() {
   return !!RUN?.running;
 }
 
-Object.assign(NS, { runActive: () => !!RUN?.running, loadBoot, kickRun, $, $$, esc, md, toast, go, badge, wireTilt, chrome, card, kindPill, words, fx, api, failToast, ext, isWeb, reset, loading, errorView,
+Object.assign(NS, { runActive: () => !!RUN?.running, loadBoot, kickRun, $, $$, esc, md, toast, go, badge, wireTilt, chrome, card, kindPill, words, fx, api, failToast, ext, isWeb, scoutImg, reset, loading, errorView,
   S, visibleCards, loadMorning, route });
 /* live views of the loaded data (Object.assign would copy today's value, not a getter) */
 Object.defineProperties(NS, { B: { get: () => B }, M: { get: () => M } });
