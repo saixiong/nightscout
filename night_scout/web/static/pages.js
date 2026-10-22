@@ -45,7 +45,7 @@ function steps() {
     { at: "#/digest", sel: "#list", t: "Every story, with its match", x: "The ring is how well it matched. Click one to jump to it in the feed; j and k step through." },
     { at: "#/digest", sel: ".story .derive", t: "Why it's here", x: "The topic Gemma filed it under and the score. Weak titles get a short Gemma headline, with the original underneath." },
     { at: "#/digest", sel: ".story .votes", t: "Keep it or quiet it", x: "🔖 keeps a story past tonight. 👎 hides it and ranks items like it lower. 🔇 mutes its source. Both can be undone." },
-    ...(chat ? [{ at: "#/digest", sel: "#askAll", t: "Ask Gemma", x: "✦ Ask opens a chat about tonight or one story. Gemma looks things up first: the night's items, web pages, YouTube transcripts, Hacker News." }] : []),
+    ...(chat ? [{ at: "#/digest", sel: "#askAll", t: "Ask about tonight", x: "Ask opens a chat about tonight or one story. Gemma looks things up first: the night's items, web pages, YouTube transcripts, Hacker News." }] : []),
     { at: "#/digest", sel: "#moreT", t: "Everything else", x: "The rest of the night, ranked by similarity to your topics, so nothing is hidden." },
     { at: "#/digest", sel: "#editTopics", t: "Your topics", x: "This is what the Digest looks for. Type your own, in your own words. No projects needed." },
     ...(proj ? [
@@ -58,6 +58,7 @@ function steps() {
     ] : []),
     { at: proj ? `#/projects/${encodeURIComponent(proj)}` : "#/projects", sel: proj ? ".how" : "#addProj", t: proj ? "Projects are the yardstick for Actions" : "Projects are optional", x: proj ? "Actions are judged against what's written here. Sharpen the interests and the scout gets sharper." : "Add a project folder and the scout also writes Actions: what to do about each item for that project." },
     { at: "#/sources", sel: "#addSrc", t: "Choose what it reads", x: "Websites, YouTube channels, newsletters, Reddit, Hacker News, Bluesky, GitHub and more. Official feeds only." },
+    ...(chat ? [{ at: "#/digest", sel: "#askNav", t: "Ask anything", x: "Ask in the top bar opens Gemma on any page: how Night Scout works, your setup and past nights, or anything else. It can suggest sources and topics to add (you confirm), and you can paste or attach screenshots, text files and PDFs." }] : []),
     { at: "#/settings/providers", sel: ".roles", t: "Your models, your machine", x: "Everything runs on Ollama locally by default. Cloud providers are optional, and their keys live in your system keychain." },
   ];
 }
@@ -172,7 +173,16 @@ function renderOther(sec) {
   }[sec] || [];
   $("#setPane").innerHTML = `<a class="back" href="#/settings">‹ Settings</a><h2 class="serif mt0">${esc(title)}</h2>
     <dl class="kv">${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl>
+    ${sec === "about" ? snippbot() : ""}
     <p class="muted small mt22">These live in <code>config.yaml</code> today${sec === "sandbox" ? " (sandbox: prefer, timeout_s, container_image)" : sec === "schedule" ? " (schedule: time)" : ""}.</p>`;
+}
+
+function snippbot() {
+  const site = NS.ext("https://snippbot.com");
+  return `<section class="pcard snip"><div class="snip-h"><img class="snip-logo" src="/static/snippbot-128.png" alt="Snippbot logo" width="56" height="56">
+      <div><p class="eyebrow m0">Developed by</p><h3 class="m0"><a class="snip-name" ${site}>Snippbot ↗</a></h3></div></div>
+    <p class="m-8">Night Scout is developed by <b>Snippbot</b>, a self-hosted platform for autonomous AI agents: persistent memory, multi-agent teams, a workflow builder and sandboxed execution. Free for personal use.</p>
+    <div class="row mt12"><a class="btn primary" ${site}>snippbot.com ↗</a><a class="btn ytlink" ${NS.ext("https://www.youtube.com/@snippbot")}>▶ YouTube · @snippbot ↗</a></div></section>`;
 }
 
 /* ================= SETTINGS → CHAT & SEARCH ================= */
@@ -201,7 +211,8 @@ async function renderChatSearch() {
         <p class="small muted m-4"><a ${NS.ext("https://brave.com/search/api/")}>Get a key →</a> · It's stored in the ${esc(keychain())} and only ever shown masked.</p>` : ""}</div>` : "";
   pane.innerHTML = `<a class="back" href="#/settings">‹ Settings</a>
     <div class="big-head"><div><h2 class="serif m0">Chat &amp; search</h2>
-      <p class="muted m-4">✦ Ask Gemma answers questions about a Digest or one story. It can search last night's items, read web pages, pull YouTube transcripts and search Hacker News. Web search is optional.</p></div></div>
+      <p class="muted m-4">✦ Ask Gemma answers questions about a Digest or one story. It can search last night's items, read web pages, pull YouTube transcripts and search Hacker News. Web search is optional.</p>
+      <p class="muted m-4"><b class="hi">Ask</b> in the top bar is for anything else: how Night Scout works, your setup, past nights, or any other question. Gemma can suggest sources and topics, and adds them only when you confirm. Paste or attach screenshots, text files and PDFs to a question.</p></div></div>
     <section class="pcard"><h4 class="sec-h">Chat model</h4>
       <p class="m0"><span class="mono">${esc(m.model || "")}</span> · ${m.local ? `on ${here}` : `via ${esc(m.provider || "")}: questions, context and tool results leave this machine`}</p>
       <p class="muted small m-4">The chat uses the Judge model unless <code>roles.chat</code> is set in <code>config.yaml</code>. Change models in <a href="#/settings/providers">AI Providers → Model roles</a>.</p></section>

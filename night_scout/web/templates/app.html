@@ -29,7 +29,8 @@
   </nav>
   <div class="top-right">
     <span class="run-chip" id="runChip"></span>
-    <a class="gear" href="#/settings" data-page="settings" title="Settings: models, providers and API keys"><span class="gi">⚙</span><span>Settings</span></a>
+    <button class="askbtn" id="askNav" type="button" title="Ask Gemma about Night Scout, your setup or anything else" aria-label="Ask Gemma"><img class="scout-ic nav" src="/static/scout.svg" width="22" height="22" alt=""><span>Ask</span></button>
+    <a class="gear" href="#/settings" data-page="settings" title="Settings: models, providers and API keys"><span class="gi"><svg class="gsvg" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="M10.3 2h3.4l.5 2.6c.6.2 1.2.5 1.7.9l2.5-.9 1.7 2.9-2 1.8c.1.6.1 1.3 0 1.9l2 1.8-1.7 2.9-2.5-.9c-.5.4-1.1.7-1.7.9l-.5 2.6h-3.4l-.5-2.6c-.6-.2-1.2-.5-1.7-.9l-2.5.9-1.7-2.9 2-1.8a6 6 0 0 1 0-1.9l-2-1.8 1.7-2.9 2.5.9c.5-.4 1.1-.7 1.7-.9L10.3 2Zm1.7 6.6a3.4 3.4 0 1 0 0 6.8 3.4 3.4 0 0 0 0-6.8Z"/></svg></span><span>Settings</span></a>
     <span class="model-chip" id="modelChip" title="All judging happens on this machine"><span class="dot"></span><span id="modelName"></span> · <span id="modelWhere">local</span></span>
   </div>
 </header>
@@ -37,6 +38,7 @@
 <main id="app"></main>
 
 <footer class="status" id="status"></footer>
+<a class="madeby" href="https://snippbot.com" target="_blank" rel="noopener noreferrer" title="snippbot.com">Developed by <img src="/static/snippbot-48.png" alt="" width="18" height="18"><b>Snippbot</b></a>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 </body>
 </html>
