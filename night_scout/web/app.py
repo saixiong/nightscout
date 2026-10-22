@@ -1598,8 +1598,9 @@ def create_app(
     def run_now() -> Any:
         if run_status()["running"]:
             raise HTTPException(409, "The scout is already out.")
-        if not profile_projects():
-            raise HTTPException(400, "Add a project and let Gemma read it first.")
+        # Same rule as the pipeline: topics alone are enough (the Digest), projects add Actions.
+        if not profile_projects() and not digest_profile().topics:
+            raise HTTPException(400, "Add a topic or a project first.")
         pid = setup_mod.start_run(state["cfg"], config_path)
         return {"ok": True, "pid": pid}
 

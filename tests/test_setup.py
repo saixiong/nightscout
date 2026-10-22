@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from night_scout import cli
 from night_scout.core import setup as setup_mod
 from night_scout.core.config import Config, ProjectRef, load_config, save_config
+from night_scout.core.profile import save_topics
 from night_scout.web import app as web
 from night_scout.web.app import create_app
 
@@ -223,7 +224,23 @@ def test_run_now_needs_a_profile(tmp_path: Path, monkeypatch) -> None:
     client.headers["X-CSRF-Token"] = page.text.split('csrf-token" content="', 1)[1].split('"')[0]
     assert client.get("/api/bootstrap").json()["setup"]["needed"] is True
     r = client.post("/api/run", json={})
-    assert r.status_code == 400 and "project" in r.json()["error"]
+    assert r.status_code == 400 and "topic or a project" in r.json()["error"]
+
+
+def test_run_now_with_topics_and_no_projects(tmp_path: Path, monkeypatch) -> None:
+    """Setup's "Just the Digest" → Finish and run now: topics alone are enough to run."""
+    cfg = Config(data_dir=str(tmp_path / "data"))
+    cfg.data_path().mkdir(parents=True)
+    config_path = tmp_path / "config.yaml"
+    save_config(cfg, config_path)
+    save_topics(cfg.profile_file(), ["Local LLMs"])
+    started: list[int] = []
+    monkeypatch.setattr(web.setup_mod, "start_run", lambda _c, _p: started.append(1) or 7)
+    client = TestClient(create_app(cfg, config_path, session_key="k"), base_url=BASE)
+    page = client.get("/?key=k")
+    client.headers["X-CSRF-Token"] = page.text.split('csrf-token" content="', 1)[1].split('"')[0]
+    r = client.post("/api/run", json={})
+    assert r.status_code == 200 and r.json()["pid"] == 7 and started == [1]
 
 
 def test_setup_writes_need_csrf(env) -> None:  # noqa: F811
