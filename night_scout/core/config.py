@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import ipaddress
+import os
 import re
+import threading
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
@@ -334,14 +336,21 @@ def load_config(path: Path) -> Config:
     return Config.model_validate(raw)
 
 
+# Held around load → modify → save so two writers can't undo each other's change.
+CONFIG_LOCK = threading.RLock()
+
+
 def save_config(cfg: Config, path: Path) -> None:
+    """Write atomically: a reader (say, tonight's run) never sees a half-written file."""
     path.parent.mkdir(parents=True, exist_ok=True)
     data = cfg.model_dump(mode="json", exclude_none=True)
     # Older configs have neither section; don't grow them just by saving.
     for key in ("providers", "roles"):
         if not data.get(key):
             data.pop(key, None)
-    path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    tmp.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def starter_config(project_dirs: list[str]) -> Config:

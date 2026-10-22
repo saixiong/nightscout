@@ -522,3 +522,6 @@ footer.status .ok { color: var(--good); } footer.status .warn { color: var(--amb
 .facts.single { grid-template-columns: 1fr; }
 .kv { display: grid; grid-template-columns: 170px 1fr; gap: 8px 16px; font-size: 13.5px; margin-top: 16px; }
 .kv dt { color: var(--muted); } .kv dd { margin: 0; color: var(--soft); }
+
+.model-chip.cloud { border-color: rgba(255, 181, 71, .5); color: var(--amber); }
+.model-chip.cloud .dot { background: var(--amber); box-shadow: 0 0 9px var(--amber); }

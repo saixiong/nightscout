@@ -6,7 +6,7 @@ from typing import Any
 from urllib.parse import quote
 
 from ..config import MastodonSource
-from ..http import PoliteClient
+from ..http import PoliteClient, SourceError
 from ..models import Item
 from .base import SourceTask, first_line, parse_time, strip_html
 
@@ -48,10 +48,13 @@ def tasks(cfgs: list[MastodonSource]) -> list[SourceTask]:
             tag = tag.lstrip("#")
 
             def fetch(client: PoliteClient, c: MastodonSource = c, tag: str = tag) -> list[Item]:
-                data = client.get_json(
-                    f"https://{c.instance}/api/v1/timelines/tag/{quote(tag)}",
-                    params={"limit": c.limit},
+                resp = client.get_public(
+                    f"https://{c.instance}/api/v1/timelines/tag/{quote(tag)}?limit={c.limit}"
                 )
+                try:
+                    data = resp.json()
+                except ValueError as e:
+                    raise SourceError("response was not JSON", "bad-data") from e
                 label = f"#{tag}@{c.instance}"
                 items = [item_from_status(s, c.instance, label) for s in data or []]
                 return [i for i in items if i]

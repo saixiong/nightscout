@@ -33,6 +33,10 @@ def make_client(routes: dict[str, str | int | Route]) -> tuple[PoliteClient, lis
 
     def handler(request: httpx.Request) -> httpx.Response:
         url = str(request.url)
+        host = request.headers.get("host", "")
+        if host and host != request.url.netloc.decode():  # get_public pins the IP; route by Host
+            query = f"?{request.url.query.decode()}" if request.url.query else ""
+            url = f"{request.url.scheme}://{host}{request.url.path}{query}"
         seen.append(url)
         for needle, answer in routes.items():
             if needle in url:
@@ -47,6 +51,10 @@ def make_client(routes: dict[str, str | int | Route]) -> tuple[PoliteClient, lis
         raise AssertionError(f"unexpected request in test: {url}")
 
     client = PoliteClient(transport=httpx.MockTransport(handler), sleep=lambda s: None)
+    # Every fixture host resolves to a public address, so get_public lets it through.
+    client._resolve = lambda host, port, *a, **k: [
+        (None, None, None, None, ("93.184.215.14", port))
+    ]
     return client, seen
 
 

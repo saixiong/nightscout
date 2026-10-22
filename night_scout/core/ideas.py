@@ -13,6 +13,7 @@ import sqlite3
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field
 
@@ -155,7 +156,11 @@ def _readme(idea: sqlite3.Row, store: Store) -> str:
         row = store.item(int(item_id))
         if row is not None:
             title = _clip(row["title"], 140).replace("[", "(").replace("]", ")")
-            links.append(f"- [{title}]({row['url']}) ({row['source_name']})")
+            url = str(row["url"] or "")
+            if urlsplit(url).scheme in ("http", "https") and not re.search(r"[\s()<>]", url):
+                links.append(f"- [{title}]({url}) ({row['source_name']})")
+            else:
+                links.append(f"- {title} ({row['source_name']})")
     if links:
         lines += ["## Inspired by", "", *links, ""]
     lines += [f"_Started from a Night Scout idea on {idea['day']}._", ""]

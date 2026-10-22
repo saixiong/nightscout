@@ -46,7 +46,8 @@ def parse_feed(content: bytes, source: str, source_name: str) -> list[Item]:
 def tasks(cfgs: list[RssSource]) -> list[SourceTask]:
     def make(c: RssSource) -> SourceTask:
         def fetch(client: PoliteClient) -> list[Item]:
-            resp = client.get(c.url)
+            # User-added feeds can later redirect anywhere: public hosts only, every hop.
+            resp = client.get_public(c.url, max_bytes=8_000_000)
             return parse_feed(resp.content, "rss", c.name)
 
         return SourceTask(key=f"rss:{c.url}", label=c.name, fetch=fetch)

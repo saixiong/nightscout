@@ -411,7 +411,8 @@ def _ideas(
         return
     try:
         ideas = propose_ideas(llm, profile, rows, n, avoid=store.recent_idea_titles())
-        store.save_ideas(run_id, day.isoformat(), ideas)
+        if ideas:  # nothing usable: keep this morning's ideas rather than wiping them
+            store.save_ideas(run_id, day.isoformat(), ideas)
     except Exception as e:  # ModelError, or anything else: ideas are a bonus
         log.warning("ideas failed: %s", e, exc_info=not isinstance(e, ModelError))
         _status(

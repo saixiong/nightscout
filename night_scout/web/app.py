@@ -7,6 +7,7 @@ CSRF token in the X-CSRF-Token header, so other websites can't drive it.
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import os
@@ -33,7 +34,15 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .. import __version__
 from ..core import actions
-from ..core.config import Config, ProviderConfig, Sources, load_config, save_config, split_ref
+from ..core.config import (
+    CONFIG_LOCK,
+    Config,
+    ProviderConfig,
+    Sources,
+    load_config,
+    save_config,
+    split_ref,
+)
 from ..core.db import Store
 from ..core.discover import add_source
 from ..core.feedback import MUTE_AT, compute_weights
@@ -105,6 +114,20 @@ class PullBody(BaseModel):
 
 class ModelBody(BaseModel):
     model: str
+
+
+LOOPBACK = ("127.0.0.1", "localhost", "::1")
+
+
+def config_writer(fn: Any) -> Any:
+    """Routes that load → change → save config.yaml run one at a time."""
+
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        with CONFIG_LOCK:
+            return fn(*args, **kwargs)
+
+    return wrapper
 
 
 def probe(url: str) -> httpx.Response | None:
@@ -553,6 +576,17 @@ def create_app(
         return templates.TemplateResponse(request, "app.html", {"csrf": csrf, "v": asset_version()})
 
     # -- read API ------------------------------------------------------------------------
+    def judge_view(c: Config) -> dict[str, Any]:
+        ref = c.role_ref("judge") or f"ollama/{c.model.name}"
+        pid, model = split_ref(ref)
+        try:
+            p = c.provider(pid)
+            local = p.kind == "ollama" or urlsplit(p.base_url).hostname in LOOPBACK
+            name = p.name or p.id
+        except KeyError:
+            local, name = False, pid
+        return {"ref": ref, "model": model, "provider": name, "local": local}
+
     @app.get("/api/bootstrap")
     def bootstrap() -> Any:
         c = state["cfg"]
@@ -566,6 +600,7 @@ def create_app(
         return {
             "version": __version__,
             "platform": sys.platform,
+            "judge": judge_view(c),
             "model": {
                 "name": c.model.name,
                 "fallback": c.model.fallback,
@@ -838,6 +873,7 @@ def create_app(
         }
 
     @app.post("/api/sources/yaml")
+    @config_writer
     def save_sources(body: YamlBody) -> Any:
         try:
             data = yaml.safe_load(body.yaml) or {}
@@ -933,6 +969,7 @@ def create_app(
         state.pop("llm", None)  # roles or providers may have changed
 
     @app.post("/api/sources/toggle")
+    @config_writer
     def toggle_source(body: ToggleBody) -> Any:
         c = load_config(config_path)
         try:
@@ -943,6 +980,7 @@ def create_app(
         return {"ok": True, "key": body.key, "enabled": body.enabled}
 
     @app.post("/api/sources/add")
+    @config_writer
     def add_source_route(body: AddSourceBody) -> Any:
         c = load_config(config_path)
         try:
@@ -964,7 +1002,10 @@ def create_app(
         return {"ok": True}
 
     @app.post("/api/ideas/{idea_id}/start")
+    @config_writer
     def start_idea(idea_id: int) -> Any:
+        if jobs.get("profile").get("state") == "running":
+            raise HTTPException(409, "A profile rebuild is running. Try again when it's done.")
         try:
             path = start_project_from_idea(
                 state["cfg"], store, llm(), idea_id, config_path=config_path
@@ -1009,6 +1050,24 @@ def create_app(
                 out[ref] = f"{out[ref]} · {label}" if ref in out else label
         return out
 
+    def key_view(p: ProviderConfig) -> dict[str, Any] | None:
+        """Configured? From where? Masked. Never raises: a locked keychain reads as unknown."""
+        env_val = os.environ.get(p.api_key_env or "", "").strip() if p.api_key_env else ""
+        if env_val:
+            return {"configured": True, "source": "env", "masked": masked(env_val)}
+        try:
+            src = key_source(p.id, None)
+            if not src:
+                return None
+            return {"configured": True, "source": src, "masked": masked(get_key(p.id, None))}
+        except Exception:
+            return {
+                "configured": True,
+                "source": "keychain",
+                "masked": "••••••••",
+                "unreadable": True,
+            }
+
     def providers_view() -> dict[str, Any]:
         c = state["cfg"]
         labels = role_labels(c)
@@ -1040,15 +1099,7 @@ def create_app(
                     status = "offline"
             else:
                 models = [{"name": m, "role": labels.get(f"{p.id}/{m}", "")} for m in p.models]
-            key = None
-            if p.kind != "ollama" and have_keychain:
-                src = key_source(p.id, p.api_key_env)
-                if src:
-                    key = {
-                        "configured": True,
-                        "source": src,
-                        "masked": masked(get_key(p.id, p.api_key_env)),
-                    }
+            key = key_view(p) if p.kind != "ollama" else None
             out.append(
                 {
                     "id": p.id,
@@ -1083,6 +1134,7 @@ def create_app(
         raise HTTPException(404, f"No provider {pid!r}")
 
     @app.put("/api/keys/{provider_id}")
+    @config_writer
     def put_key(provider_id: str, body: KeyBody) -> Any:
         c = load_config(config_path)
         p = ensure_provider(c, provider_id)
@@ -1104,6 +1156,7 @@ def create_app(
         return {"ok": True}
 
     @app.delete("/api/keys/{provider_id}")
+    @config_writer
     def del_key(provider_id: str) -> Any:
         c = load_config(config_path)
         try:
@@ -1120,6 +1173,7 @@ def create_app(
         return {"ok": True}
 
     @app.post("/api/providers")
+    @config_writer
     def add_provider(body: NewProvider) -> Any:
         c = load_config(config_path)
         base = "".join(ch if ch.isalnum() else "-" for ch in body.name.lower()).strip("-")[:24]
@@ -1147,6 +1201,7 @@ def create_app(
         return {"ok": True, "id": pid}
 
     @app.put("/api/providers/{provider_id}/models")
+    @config_writer
     def add_provider_model(provider_id: str, body: ModelBody) -> Any:
         c = load_config(config_path)
         p = ensure_provider(c, provider_id)
@@ -1173,6 +1228,7 @@ def create_app(
         return {"steps": [s.to_dict() for s in steps]}
 
     @app.put("/api/roles")
+    @config_writer
     def put_roles(body: RolesBody) -> Any:
         c = load_config(config_path)
         for role, ref in body.model_dump(exclude_none=True).items():

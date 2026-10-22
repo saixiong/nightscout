@@ -160,7 +160,7 @@ function renderOther(sec) {
 
 const modelsOf = p => (p.models || []).map(m => (typeof m === "string" ? { name: m } : m));
 function roleOptions(role, val) {
-  const local = PV.providers.filter(p => p.kind === "ollama" || p.base_url?.includes("127.0.0.1") || p.base_url?.includes("localhost"));
+  const local = PV.providers.filter(p => p.local !== false);
   const cloud = PV.providers.filter(p => !local.includes(p));
   const opt = (p, m) => { const v = `${p.id}/${m.name}`; return `<option value="${esc(v)}" ${v === val ? "selected" : ""}>${esc(p.id === "ollama" ? m.name : v)}</option>`; };
   const groups = local.filter(p => modelsOf(p).length).map(p => `<optgroup label="${esc(p.id === "ollama" ? `On ${B().platform === "darwin" ? "this Mac" : "this machine"} · Ollama` : p.name)}">${modelsOf(p).map(m => opt(p, m)).join("")}</optgroup>`).join("");
@@ -170,7 +170,7 @@ function roleOptions(role, val) {
   return (known ? "" : `<option value="${esc(val)}" selected>${esc(val)}</option>`) + groups + cl +
     (locked.length ? `<optgroup label="Add a key to use">${locked.map(n => `<option disabled>${esc(n)}</option>`).join("")}</optgroup>` : "");
 }
-const isCloud = v => { const id = String(v || "").split("/")[0]; return CLOUD.some(c => c.id === id); };
+const isCloud = v => { const id = String(v || "").split("/")[0]; const p = PV?.providers?.find(x => x.id === id); return p ? p.local === false : CLOUD.some(c => c.id === id); };
 const statusBadge = p => p.status === "connected" ? `<span class="badge ok">Connected</span>` : p.status === "offline" ? `<span class="badge off">Not running</span>` : `<span class="badge off">Not checked</span>`;
 const mask = k => k?.masked || "••••••••";
 
@@ -209,7 +209,7 @@ function renderProviders() {
       <div class="addform mt10"><input type="text" id="lmModel" placeholder="Model loaded in LM Studio, e.g. google/gemma-3-12b"><button class="btn" id="lmAdd">Offer for roles</button></div>
       <div class="testline" id="t-lmstudio"></div>
     </section>
-    ${custom.map(c => `<section class="pcard prov"><div class="prow"><span class="tile">⚙</span><div class="pmain"><div class="pname">${esc(c.name)} <span class="badge local">Custom</span>${statusBadge(c)}</div>
+    ${custom.map(c => `<section class="pcard prov"><div class="prow"><span class="tile">⚙</span><div class="pmain"><div class="pname">${esc(c.name)} ${c.local === false ? `<span class="badge off">Leaves this machine</span>` : `<span class="badge local">Local</span>`}${statusBadge(c)}</div>
       <div class="muted small mono">${esc(c.base_url)}</div></div><button class="btn ghost" data-test="${esc(c.id)}">Test</button></div><div class="testline" id="t-${esc(c.id)}"></div></section>`).join("")}
 
     <h4 class="sec-h mt22">Cloud · optional</h4>

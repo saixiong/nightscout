@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from datetime import date
 from pathlib import Path
@@ -625,3 +626,60 @@ def test_interrupted_try_its_marked_failed(tmp_path: Path) -> None:
     store.close()
     create_app(cfg, tmp_path / "config.yaml", session_key="k")
     assert Store(cfg.db_file()).action(aid)["status"] == "failed"
+
+
+# -- audit follow-ups ------------------------------------------------------------------------------
+def test_every_mutating_api_route_needs_csrf(env) -> None:
+    client, *_ = env
+    routes = [
+        (m, r.path)
+        for r in client.app.routes
+        if getattr(r, "path", "").startswith("/api/")
+        for m in getattr(r, "methods", set())
+        if m in {"POST", "PUT", "DELETE"} and "{rest" not in r.path
+    ]
+    assert len(routes) >= 15
+    for method, path in routes:
+        url = path.replace("{item_id}", "1").replace("{action_id}", "1").replace("{idea_id}", "1")
+        url = url.replace("{provider_id}", "openrouter").replace("{name}", "x")
+        r = client.request(method, url, json={}, headers={"X-CSRF-Token": "wrong"})
+        assert r.status_code == 403, (method, path, r.status_code)
+
+
+def test_idea_start_waits_for_a_profile_rebuild(env, monkeypatch) -> None:
+    client, _, _, cfg, *_ = env
+    iid = _idea(cfg)
+    gate = threading.Event()
+
+    def slow_build(*_a, **_k):
+        gate.wait(5)
+
+    monkeypatch.setattr(web, "build_profile_file", slow_build)
+    monkeypatch.setattr(web, "make_llm", lambda _cfg, _role="judge": object())
+    client.post("/api/projects/rebuild")
+    try:
+        assert client.post(f"/api/ideas/{iid}/start").status_code == 409
+    finally:
+        gate.set()
+
+
+def test_bootstrap_says_when_judging_leaves_the_machine(env, offline) -> None:
+    client, *_ = env
+    assert client.get("/api/bootstrap").json()["judge"]["local"] is True
+    r = client.post(
+        "/api/providers",
+        json={"name": "Remote box", "base_url": "https://llm.example.com/v1", "model": "gemma-4"},
+    )
+    pid = r.json()["id"]
+    assert client.put("/api/roles", json={"judge": f"{pid}/gemma-4"}).status_code == 200
+    j = client.get("/api/bootstrap").json()["judge"]
+    assert j["local"] is False and j["model"] == "gemma-4" and j["provider"] == "Remote box"
+    p = next(p for p in client.get("/api/providers").json()["providers"] if p["id"] == pid)
+    assert p["local"] is False
+
+
+def test_config_writes_leave_no_temp_files(env) -> None:
+    client, *_rest, config_path = env
+    client.post("/api/sources/add", json={"type": "hackernews", "value": "mcp"})
+    assert not [p for p in config_path.parent.iterdir() if p.name.endswith(".tmp")]
+    assert "mcp" in config_path.read_text()

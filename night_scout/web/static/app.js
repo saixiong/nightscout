@@ -66,6 +66,10 @@ const fmtShort = iso => iso ? new Date(iso).toLocaleDateString("en-US", { month:
 const fmtAt = iso => iso ? new Date(iso).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }) : "";
 const hhmm = iso => iso ? new Date(iso).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false }) : "";
 const runMinutes = run => run && run.finished_at ? ((new Date(run.finished_at) - new Date(run.started_at)) / 60000).toFixed(1) : null;
+const judge = () => B?.judge || { model: B?.model?.name || "Gemma", local: true, provider: "Ollama" };
+const judgedLine = () => judge().local
+  ? `Judged by ${esc(judge().model)} on ${here()}; nothing left the machine.`
+  : `Judged by ${esc(judge().model)} via ${esc(judge().provider)}; item text and your project profiles were sent there.`;
 const here = () => (B && B.platform === "darwin" ? "this Mac" : "this machine");
 const today = () => { const d = new Date(), z = n => String(n).padStart(2, "0"); return `${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())}`; };
 const dayLabel = () => fmtDay(M?.day || today());
@@ -109,7 +113,7 @@ const STAGES = [
   ["fetch", "Fetch", () => `${RUN?.sources_total ?? B?.sources_count ?? 0} sources`, "new", "new"],
   ["dedupe", "Dedupe", () => "URL + embeddings", "near_duplicates", "merged"],
   ["prefilter", "Pre-filter", () => B?.model.embed || "embeddings", "candidates", "kept"],
-  ["judge", "Judge", () => B?.model.name || "Gemma", "scored", "scored"],
+  ["judge", "Judge", () => judge().model, "scored", "scored"],
   ["actions", "Actions", () => "Try-it · notes · research", "with_actions", "proposed"],
   ["ideas", "Ideas", () => "new project ideas", "ideas", "ideas"],
   ["digest", "Digest", () => `top ${B?.thresholds?.digest_size ?? 7}`, "digest_items", "picked"],
@@ -118,7 +122,11 @@ const stageName = p => (STAGES.find(s => s[0] === p?.stage)?.[1] || "working").t
 function chrome(page) {
   $$("[data-page]").forEach(a => a.classList.toggle("on", a.dataset.page === page));
   if (!B) return;
-  $("#modelName").textContent = B.model.name;
+  const j = B.judge || { model: B.model.name, local: true, provider: "Ollama" };
+  $("#modelName").textContent = j.model;
+  $("#modelWhere").textContent = j.local ? "local" : j.provider;
+  $("#modelChip").classList.toggle("cloud", !j.local);
+  $("#modelChip").title = j.local ? "All judging happens on this machine" : `Judging runs on ${j.provider}: item text and project profiles are sent there`;
   const rows = B.statuses, bad = rows.filter(r => !r.ok), run = B.run;
   const model = B.pipeline.find(p => p.key === "pipeline:model");
   const sched = B.schedule.installed === false
@@ -195,7 +203,7 @@ function renderMorning(id, tab) {
         <section class="hero">
           <p class="eyebrow">Good morning · ${esc(dayLabel())}</p>
           <h1><em>${words(cards.length)}</em> thing${cards.length === 1 ? "" : "s"}<br>worth doing.</h1>
-          <p class="sub">Every item was checked against your ${M.projects.length} project${M.projects.length === 1 ? "" : "s"} for issues, changes and improvements. Judged by Gemma on ${here()}; nothing left the machine.</p>
+          <p class="sub">Every item was checked against your ${M.projects.length} project${M.projects.length === 1 ? "" : "s"} for issues, changes and improvements. ${judgedLine()}</p>
           <div class="funnel">
             <div class="st"><b>${st.new ?? 0}</b><small>new</small></div><span class="arrow">→</span>
             <div class="st"><b>${st.scored ?? 0}</b><small>judged</small></div><span class="arrow">→</span>
@@ -639,7 +647,7 @@ function renderMorningState(app, s) {
   let right = "";
   if (s === "running") right = `<h2 class="serif">Scouting ${RUN.sources_total} sources for ${RUN.projects} project${RUN.projects === 1 ? "" : "s"}</h2>
       <ul class="stages" id="stages"></ul>
-      <p class="muted small mt22">${esc(B.model.name)} on ${here()} · nothing leaves the machine. This page follows along every few seconds.</p>`;
+      <p class="muted small mt22">${esc(judge().model)} ${judge().local ? `on ${here()} · nothing leaves the machine` : `via ${esc(judge().provider)} · item text goes to ${esc(judge().provider)}`}. This page follows along every few seconds.</p>`;
   if (s === "quiet") right = (M.ignored && !(M.cards || []).length)
     ? `<h2 class="serif">Nothing left on the list.</h2><p class="summary">Hidden picks stay hidden. Tomorrow's run brings new ones.</p>
        <div class="row"><a class="btn" href="#/sources">Check sources</a><a class="btn ghost" href="#/projects">Tune what projects care about</a></div>`

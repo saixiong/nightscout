@@ -340,7 +340,9 @@ def append_profile_entry(path: Path, entry: dict[str, Any]) -> None:
     if candidate is None:
         data["projects"] = [*old, entry]
         candidate = yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
-    path.write_text(candidate, encoding="utf-8")
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(candidate, encoding="utf-8")
+    tmp.replace(path)
 
 
 @dataclass

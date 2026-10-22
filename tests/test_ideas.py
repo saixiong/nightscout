@@ -273,3 +273,28 @@ def test_append_profile_entry_falls_back_to_rewrite(tmp_path: Path) -> None:
     fresh = tmp_path / "new" / "profile.yaml"
     append_profile_entry(fresh, {"name": "c", "path": "/c"})
     assert yaml.safe_load(fresh.read_text())["projects"][0]["name"] == "c"
+
+
+def test_a_rerun_with_no_usable_ideas_keeps_the_mornings(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    store = Store(cfg.db_file())
+    ids = _seed(store)
+    llm = fake_llm()
+    llm.answers["IdeaProposal"] = lambda u: {"ideas": [_idea("PDF speed bench", [ids["rss:1"]])]}
+    run_once(cfg, store=store, llm=llm, today=DAY)
+    llm.answers["IdeaProposal"] = lambda u: {"ideas": [_idea("Made up", [999999])]}
+    run_once(cfg, store=store, llm=llm, today=DAY)  # same day, nothing valid this time
+    assert [r["title"] for r in store.ideas_for_day("2026-10-22")] == ["PDF speed bench"]
+
+
+def test_readme_links_only_http(tmp_path: Path) -> None:
+    from night_scout.core.ideas import _readme
+
+    cfg = _cfg(tmp_path)
+    store = Store(cfg.db_file())
+    ids = _seed(store)
+    store.set_item_fields(ids["rss:1"], url="javascript:alert(1)")
+    iid = store.save_ideas(1, "2026-10-22", [Idea(**_idea("X", [ids["rss:1"], ids["rss:2"]]))])[0]
+    text = _readme(store.idea(iid), store)
+    assert "javascript:" not in text
+    assert "](http" in text  # the other item still links
