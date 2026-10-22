@@ -303,15 +303,12 @@ function userMsg(text, att, mid) {
 const IMG_MAX = 1568, TEXT_MAX = 200000, PDF_MAX = 10e6, MAX_ATT = 4;
 const readAs = (f, how) => new Promise((ok, bad) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = bad; r[how](f); });
 async function shrink(file) {
-  const url = URL.createObjectURL(file);
-  try {
-    const img = new Image(); img.src = url; await img.decode();
-    const k = Math.min(1, IMG_MAX / Math.max(img.naturalWidth, img.naturalHeight));
-    const c = document.createElement("canvas"); c.width = Math.max(1, Math.round(img.naturalWidth * k)); c.height = Math.max(1, Math.round(img.naturalHeight * k));
-    const g = c.getContext("2d"); g.fillStyle = "#fff"; g.fillRect(0, 0, c.width, c.height);  // JPEG has no transparency
-    g.drawImage(img, 0, 0, c.width, c.height);
-    return c.toDataURL("image/jpeg", 0.86);
-  } finally { URL.revokeObjectURL(url); }
+  const img = new Image(); img.src = await readAs(file, "readAsDataURL"); await img.decode();  // a data: URL (the CSP's img-src has no blob:)
+  const k = Math.min(1, IMG_MAX / Math.max(img.naturalWidth, img.naturalHeight));
+  const c = document.createElement("canvas"); c.width = Math.max(1, Math.round(img.naturalWidth * k)); c.height = Math.max(1, Math.round(img.naturalHeight * k));
+  const g = c.getContext("2d"); g.fillStyle = "#fff"; g.fillRect(0, 0, c.width, c.height);  // JPEG has no transparency
+  g.drawImage(img, 0, 0, c.width, c.height);
+  return c.toDataURL("image/jpeg", 0.86);
 }
 const dataSize = d => Math.round((d.length - d.indexOf(",") - 1) * 3 / 4);
 async function addFiles(files) {
@@ -383,7 +380,7 @@ function proposeCard(m) {
   const btns = done ? "" : `<div class="row"><button class="btn primary sm" data-do="add" data-mid="${m.id}" ${local.busy ? "disabled" : ""}>${local.busy === "add" ? "Adding…" : src ? "Add source" : "Add topic"}</button>
     <button class="btn ghost sm" data-do="skip" data-mid="${m.id}" ${local.busy ? "disabled" : ""}>Not now</button></div>`;
   return `<div class="propose ${done ? esc(d.state) : ""}"><p class="pr-h">${src ? `➕ Add source · ${esc(TYPE_NAME[p.type] || p.type || "")}` : "🏷 Add topic"}</p>
-    <p class="pr-v">${esc(label)}</p>${src && p.label && p.value && p.value !== p.label ? `<p class="muted small">${esc(p.value)}</p>` : ""}${p.why ? `<p class="pr-why">${esc(p.why)}</p>` : ""}${note}${btns}</div>`;
+    <p class="pr-v">${esc(label)}</p>${src && p.label && p.value && p.value !== p.label ? `<p class="pr-val">${esc(p.value)}</p>` : ""}${p.why ? `<p class="pr-why">${esc(p.why)}</p>` : ""}${note}${btns}</div>`;
 }
 async function decide(mid, action) {
   const thread = C.thread, m = (C.data?.messages || []).find(x => x.id === mid);

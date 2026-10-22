@@ -4,7 +4,7 @@
 
 /* layout: list | feed card | chat drawer (opened by static/chat.js) */
 .frame.digest { grid-template-columns: var(--left) minmax(0, 1fr); transition: grid-template-columns .35s var(--spring); }
-.frame.digest.chat-open { grid-template-columns: var(--left) minmax(0, 1fr) 390px; }
+.frame.digest.chat-open { grid-template-columns: var(--left) minmax(0, 1fr) 390px; grid-template-rows: minmax(0, 1fr); }  /* a long chat scrolls inside the drawer instead of growing the row */
 .frame.digest > .chat { display: none; min-width: 0; }
 .frame.digest.chat-open > .chat { display: block; padding-bottom: 26px; }
 @media (max-width: 1280px) { .frame.digest.chat-open { grid-template-columns: 300px minmax(0, 1fr) 360px; } }

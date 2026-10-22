@@ -798,7 +798,8 @@ body.chat-on #askNav .scout-ic.nav { box-shadow: 0 0 0 2px #1b1305; }
 .chat-in .propose.skipped { opacity: .6; }
 .chat-in .propose p { margin: 0 0 6px; font-size: 13px; }
 .chat-in .propose .pr-h { color: var(--amber); font-weight: 650; font-size: 12px; letter-spacing: .02em; }
-.chat-in .pr-v { color: var(--text); font-family: var(--mono); overflow-wrap: anywhere; }
+.chat-in .pr-v { color: var(--text); font-weight: 650; overflow-wrap: anywhere; }
+.chat-in .propose .pr-val { color: var(--muted); font-family: var(--mono); font-size: 11.5px; overflow-wrap: anywhere; }
 .chat-in .propose .pr-why { color: var(--muted); font-size: 12px; }
 .chat-in .pr-ok { color: var(--good); } .chat-in .pr-err { color: #ff8a80; }
 .chat-in .propose .row { display: flex; gap: 8px; margin-top: 4px; }
