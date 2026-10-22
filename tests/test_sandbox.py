@@ -163,3 +163,34 @@ def test_scrub_paths(tmp_path: Path) -> None:
     out = scrub_paths(log, tmp_path)
     assert str(tmp_path.resolve()) not in out and "<sandbox>/.venv/lib" in out
     assert str(Path.home()) not in out and "home ~/x" in out
+
+
+def test_api_keys_never_reach_the_sandbox_env(monkeypatch, tmp_path: Path) -> None:
+    """Provider keys (env or keychain) and any *_API_KEY / *_TOKEN never enter Try-it."""
+    from night_scout.core import secrets
+
+    planted = {
+        "OPENROUTER_API_KEY": "sk-or-v1-planted-openrouter",
+        "ANTHROPIC_API_KEY": "sk-ant-planted-anthropic",
+        "OPENAI_API_KEY": "sk-planted-openai",
+        "MY_SERVICE_API_KEY": "planted-custom-key",
+        "HF_TOKEN": "hf_planted_token",
+        "NPM_TOKEN": "npm_planted_token",
+    }
+    for k, v in planted.items():
+        monkeypatch.setenv(k, v)
+    secrets.set_key("lmstudio", "keychain-planted-secret")
+    env = venv_env(tmp_path, tmp_path / ".venv" / "bin")
+    for name in env:
+        assert not name.endswith(("_API_KEY", "_TOKEN", "_KEY", "_SECRET")), name
+    blob = "\n".join(f"{k}={v}" for k, v in env.items())
+    for secret in [*planted.values(), "keychain-planted-secret"]:
+        assert secret not in blob
+    args = container_args("docker", "python:3.12-slim", tmp_path / "run.sh", "n", 60)
+    joined = " ".join(args)
+    assert "--env-file" not in args
+    for k, v in planted.items():
+        assert k not in joined and v not in joined
+    # Only the fixed, harmless variables are passed with -e.
+    passed = [args[i + 1].split("=")[0] for i, a in enumerate(args) if a == "-e"]
+    assert passed == ["HOME", "PIP_DISABLE_PIP_VERSION_CHECK", "npm_config_update_notifier"]
