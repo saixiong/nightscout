@@ -8,7 +8,7 @@
 const { $, $$, esc, api, failToast } = NS;
 const PHONE = 760;
 const C = { open: false, ctx: null, key: "", meta: null, thread: null, data: null, timer: null, tick: null,
-  pending: null, openCards: new Set(), float: false, err: null };
+  pending: null, openCards: new Set(), float: false, err: null, fails: 0 };
 
 const keyOf = ctx => ctx.kind === "item" ? `item:${ctx.id}` : `digest:${ctx.day || ""}`;
 const remember = (key, id) => { try { sessionStorage.setItem("nsChat:" + key, String(id)); } catch (e) { /* private mode */ } };
@@ -70,14 +70,20 @@ async function openChat(ctx) {
   C.open = true;
   if (same) { host(); layout(); render(); return $("#chatIn")?.focus(); }
   stop();
-  Object.assign(C, { ctx: clean, key, meta: null, thread: recall(key), data: null, pending: null, err: null });
+  Object.assign(C, { ctx: clean, key, meta: null, thread: recall(key), data: null, pending: null, err: null, fails: 0 });
   C.openCards.clear();
   host(); layout(); render(); fab();
   const q = clean.kind === "item" ? `kind=item&id=${clean.id}` : `kind=digest${clean.day ? `&day=${encodeURIComponent(clean.day)}` : ""}`;
   const [m] = await Promise.all([api("GET", `/api/chat/meta?${q}`), C.thread ? load() : null]);
   if (C.key !== key) return;
   if (m.ok) C.meta = m.data; else C.err = m.error;
-  if (C.meta?.context?.day && clean.kind === "digest") C.ctx.day = C.meta.context.day;
+  if (C.meta?.context?.day && clean.kind === "digest" && !clean.day) {
+    // "the latest Digest" turned out to be a real day: use that day's conversation
+    C.ctx.day = C.meta.context.day; C.key = keyOf(C.ctx);
+    const dayKey = C.key;
+    if (!C.thread) { C.thread = recall(dayKey); if (C.thread) await load(); }
+    if (C.key !== dayKey) return;
+  }
   render();
   if (C.data?.status === "running") poll();
   $("#chatIn")?.focus();
@@ -95,8 +101,10 @@ async function load() {
   if (!C.thread) return;
   const key = C.key, r = await api("GET", `/api/chat/${C.thread}`);
   if (key !== C.key) return;
-  if (r.ok) { C.data = r.data; C.pending = null; }
-  else if (r.status === 404) { forget(key); C.thread = null; C.data = null; }
+  if (r.ok) { C.data = r.data; C.pending = null; C.fails = 0; return; }
+  if (r.status === 404) { forget(key); C.thread = null; C.data = null; return; }
+  // signed out, or the server keeps failing: stop polling and say why
+  if (r.status === 401 || ++C.fails >= 5) C.data = { ...(C.data || {}), status: "error", error: r.error, progress: null };
 }
 function poll() {
   clearTimeout(C.timer);
@@ -118,9 +126,10 @@ async function ask(question) {
   if (C.thread) body.thread = C.thread;
   let r = await api("POST", "/api/chat", body);
   if (!r.ok && r.status === 404 && body.thread) { delete body.thread; forget(key); r = await api("POST", "/api/chat", body); }
+  if (r.ok) remember(key, r.data.thread);  // even if the drawer moved on meanwhile
   if (key !== C.key) return;
   if (!r.ok) { C.pending = null; renderMsgs(); renderBox(); return failToast(r, "Asking Gemma"); }
-  C.thread = r.data.thread; remember(key, C.thread);
+  C.thread = r.data.thread;
   C.pending.turn = r.data.turn;
   C.data = { ...(C.data || {}), status: "running", progress: { stage: "thinking" } };
   renderMsgs(); renderBox(); poll();
@@ -225,8 +234,7 @@ function renderMsgs() {
   const box = $("#chatMsgs"); if (!box) return;
   const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
   const msgs = C.data?.messages || [];
-  if (C.err) { box.innerHTML = `<div class="a err"><p>${esc(C.err)}</p></div>`; return; }
-  let html = "";
+  let html = C.err ? `<div class="a err"><p>${esc(C.err)}</p></div>` : "";
   for (const m of msgs) {
     if (m.role === "user") html += `<div class="u">${esc(m.content)}</div>`;
     else if (m.role === "tool") html += toolCard(m);
@@ -235,9 +243,11 @@ function renderMsgs() {
   }
   const seen = msgs.some(m => m.role === "user" && C.pending && m.turn === C.pending.turn);
   if (C.pending && !seen) html += `<div class="u">${esc(C.pending.q)}</div>`;
-  if (C.data?.status === "error" && C.data.error && !msgs.some(m => m.role === "error")) html += `<div class="a err"><p>${esc(C.data.error)}</p></div>`;
+  const lastTurn = msgs.length ? msgs[msgs.length - 1].turn : 0;
+  const shown = msgs.some(m => m.role === "error" && m.turn === lastTurn);
+  if (C.data?.status === "error" && C.data.error && !shown) html += `<div class="a err"><p>${esc(C.data.error)}</p></div>`;
   if (C.pending || C.data?.status === "running") html += `<div class="thinking" id="chatWait" aria-live="polite"><span class="label"></span> <span class="secs"></span></div>`;
-  box.innerHTML = html || hello();
+  box.innerHTML = msgs.length || C.pending || C.data?.status === "running" ? html : html + hello();
   $$("details.tcall", box).forEach(d => d.addEventListener("toggle", () => { if (d.open) C.openCards.add(+d.dataset.mid); else C.openCards.delete(+d.dataset.mid); }));
   const s = $("#chatSugg");
   if (s) s.onclick = () => ask(s.textContent);

@@ -120,6 +120,10 @@ def fetch_public(url: str, ctx: ToolContext) -> tuple[str, str, bytes, bool]:
             raise ValueError(f"Refused: {url[:200]} is not an http(s) address.")
         if parts.username or parts.password:
             raise ValueError("Refused: the address contains a user name or password.")
+        try:  # international names travel as IDNA in Host and SNI
+            ascii_host = parts.hostname.encode("idna").decode("ascii")
+        except UnicodeError:
+            raise ValueError(f"Refused: {parts.hostname[:100]} is not a valid host name.") from None
         ip = resolve_public_ip(url, ctx.resolve)
         if ip is None:
             raise ValueError(
@@ -129,12 +133,13 @@ def fetch_public(url: str, ctx: ToolContext) -> tuple[str, str, bytes, bool]:
         literal = f"[{ip}]" if ":" in ip else ip
         port = f":{parts.port}" if parts.port else ""
         pinned = urlunsplit((parts.scheme, literal + port, parts.path or "/", parts.query, ""))
+        host_header = f"[{ascii_host}]" if ":" in ascii_host else ascii_host
         headers = {
-            "Host": parts.netloc.rsplit("@", 1)[-1],
+            "Host": host_header + port,
             "User-Agent": user_agent(ctx.contact),
             "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,application/json;q=0.8",
         }
-        ext = {"sni_hostname": parts.hostname} if parts.scheme == "https" else {}
+        ext = {"sni_hostname": ascii_host} if parts.scheme == "https" else {}
         left = max(1.0, deadline - time.monotonic())
         # A fresh client per hop: no connection or TLS session reuse across hosts.
         with (

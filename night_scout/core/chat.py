@@ -199,17 +199,23 @@ def get_messages(store: Store, thread_id: int) -> list[dict[str, Any]]:
 
 
 def history(store: Store, thread_id: int, before_turn: int) -> list[dict[str, Any]]:
-    """Earlier questions and answers in this thread (not their tool results), newest last."""
+    """Earlier questions and answers in this thread (not their tool results), oldest first.
+    Only answered turns: a failed or interrupted question would leave two user messages in a
+    row, which strict chat templates reject."""
     rows = store.conn.execute(
         "SELECT turn, role, content FROM chat_messages WHERE thread_id=? AND turn<? AND turn>=? "
         "AND role IN ('user', 'assistant') ORDER BY id",
         (thread_id, before_turn, before_turn - HISTORY_TURNS),
     ).fetchall()
-    return [
-        {"role": r["role"], "content": clip(r["content"] or "", 2500)[0]}
-        for r in rows
-        if r["content"]
-    ]
+    turns: dict[int, dict[str, str]] = {}
+    for r in rows:
+        turns.setdefault(int(r["turn"]), {}).setdefault(r["role"], r["content"] or "")
+    out: list[dict[str, Any]] = []
+    for _turn, pair in sorted(turns.items()):
+        if pair.get("user") and pair.get("assistant"):
+            out.append({"role": "user", "content": clip(pair["user"], 2500)[0]})
+            out.append({"role": "assistant", "content": clip(pair["assistant"], 2500)[0]})
+    return out
 
 
 def turn_status(store: Store, thread_id: int) -> str:
@@ -384,6 +390,11 @@ GUIDE = {
 }
 
 
+def _defang(text: str) -> str:
+    """Feed text can't close the CONTEXT fence early."""
+    return text.replace("<<<", "‹‹‹").replace(">>>", "›››")
+
+
 def system_prompt(
     cfg: Config, about: str, context: str, today: str | None = None, kind: str = "digest"
 ) -> str:
@@ -399,7 +410,7 @@ def system_prompt(
         guide=GUIDE.get(kind, GUIDE["digest"]),
         steps=MAX_STEPS,
         search_note=search_note,
-        context=context,
+        context=_defang(context),
     )
 
 

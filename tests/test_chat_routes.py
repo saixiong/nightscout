@@ -174,7 +174,9 @@ def test_one_turn_at_a_time_per_thread(env, monkeypatch) -> None:
     running = client.get(f"/api/chat/{tid}").json()
     assert running["status"] == "running" and running["progress"]["stage"] == "thinking"
     gate.set()
-    assert wait(client, tid)["status"] == "done"
+    done = wait(client, tid)
+    assert done["status"] == "done"
+    assert [m["role"] for m in done["messages"]] == ["user", "assistant"]  # no orphan question
 
 
 def test_every_chat_and_search_write_needs_csrf(env) -> None:
@@ -275,3 +277,16 @@ def test_chat_tables_live_outside_core_db(env, tmp_path: Path) -> None:
     conn.close()
     assert {"chat_threads", "chat_messages"} <= names
     assert json.loads(client.get("/api/bootstrap").text)["version"]
+
+
+def test_brave_key_refused_when_a_provider_owns_the_id(env) -> None:
+    client, _, _, config_path, _ = env
+    text = config_path.read_text() + (
+        "providers:\n- id: brave-search\n  kind: openai_compatible\n"
+        "  base_url: https://llm.example/v1\n"
+    )
+    config_path.write_text(text)
+    client.put("/api/search", json={"provider": "none"})  # reloads config.yaml
+    r = client.put("/api/search/brave-key", json={"key": KEY})
+    assert r.status_code == 409 and "brave-search" in r.json()["error"]
+    assert secrets.get_key(BRAVE_KEY_ID) is None

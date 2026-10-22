@@ -83,6 +83,7 @@ def register(
     chat.ensure_tables(store)
     live: dict[int, dict[str, Any]] = {}  # thread id → what the running turn is doing
     live_lock = threading.Lock()
+    ask_lock = threading.Lock()
 
     def model_view(c: Config) -> dict[str, Any]:
         ref = c.role_ref("chat") or f"ollama/{c.model.name}"
@@ -155,17 +156,19 @@ def register(
             context = clean_context(body.context)
             tid = chat.create_thread(store, context, question)
         key = f"chat:{tid}"
-        if jobs.get(key).get("state") == "running":
-            raise HTTPException(409, "Gemma is still answering the last question.")
-        turn = chat.next_turn(store, tid)
-        chat.add_message(store, tid, turn, "user", question)
         cfg = state["cfg"]
+        gate = threading.Event()  # the job waits until its question is stored
+        slot: dict[str, int] = {}
 
         def progress(event: dict[str, Any]) -> None:
             with live_lock:
                 live[tid] = event
 
         def work() -> None:
+            gate.wait(10)
+            turn = slot.get("turn")
+            if turn is None:  # storing the question failed; nothing to answer
+                return
             try:
                 llm = make_chat_llm(cfg)
             except Exception as e:  # e.g. no model configured
@@ -193,9 +196,18 @@ def register(
                 with live_lock:
                     live.pop(tid, None)
 
-        progress({"stage": "thinking"})
-        if not jobs.start(key, work):
-            raise HTTPException(409, "Gemma is still answering the last question.")
+        # Claim the thread first (Jobs.start is atomic), then number and store the question:
+        # two quick submits can't both store a question for the same turn.
+        try:
+            with ask_lock:
+                if not jobs.start(key, work):
+                    raise HTTPException(409, "Gemma is still answering the last question.")
+                progress({"stage": "thinking"})
+                turn = chat.next_turn(store, tid)
+                chat.add_message(store, tid, turn, "user", question)
+                slot["turn"] = turn
+        finally:
+            gate.set()
         return {"ok": True, "thread": tid, "turn": turn, "status": "running"}
 
     @app.get("/api/chat/{thread_id}")
@@ -267,6 +279,13 @@ def register(
 
     @app.put("/api/search/brave-key")
     def put_brave_key(body: BraveKeyBody) -> Any:
+        if BRAVE_KEY_ID in {p.id for p in state["cfg"].all_providers()}:
+            # One keychain namespace: the provider would send this key as its bearer token.
+            raise HTTPException(
+                409,
+                f"A model provider uses the id {BRAVE_KEY_ID!r}; rename it in config.yaml "
+                "before saving a Brave Search key.",
+            )
         try:
             set_key(BRAVE_KEY_ID, body.key)
         except SecretStoreUnavailable as e:

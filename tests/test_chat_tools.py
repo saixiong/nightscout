@@ -21,7 +21,12 @@ from night_scout.core.tools.tonight import search_tonight
 from night_scout.core.tools.web import html_text, read_page
 
 PUBLIC = "93.184.215.14"
-DNS = {"e.example": PUBLIC, "news.example": PUBLIC, "evil.example": "10.1.2.3"}
+DNS = {
+    "e.example": PUBLIC,
+    "news.example": PUBLIC,
+    "evil.example": "10.1.2.3",
+    "münchen.example": PUBLIC,
+}
 
 
 def resolver(host: str, port: int, *a, **k):
@@ -71,6 +76,19 @@ def test_read_page_returns_readable_main_text() -> None:
     # connected to the checked address, host name kept for Host + TLS
     assert seen[0].url.host == PUBLIC and page_host(seen[0]) == "e.example"
     assert seen[0].extensions.get("sni_hostname") == "e.example"
+
+
+def test_read_page_sends_international_names_as_idna() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, text="Servus", headers={"content-type": "text/plain"})
+
+    out = read_page(ctx_with(handler), "https://münchen.example:8443/a")
+    assert out["text"] == "Servus"
+    assert page_host(seen[0]) == "xn--mnchen-3ya.example:8443"
+    assert seen[0].extensions["sni_hostname"] == "xn--mnchen-3ya.example"
 
 
 def test_html_text_falls_back_to_body_without_main() -> None:
