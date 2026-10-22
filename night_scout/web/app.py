@@ -156,6 +156,11 @@ def probe(url: str) -> httpx.Response | None:
         return None
 
 
+def plain_title(title: str | None) -> str:
+    """Posts sometimes carry markdown emphasis in their first line (Bluesky, Mastodon)."""
+    return " ".join(re.sub(r"\*\*(.+?)\*\*", r"\1", title or "").split())
+
+
 def safe_url(url: str | None) -> str | None:
     """Only http(s) links from feeds become hrefs; anything else gets no link at all."""
     u = (url or "").strip()
@@ -715,7 +720,7 @@ def create_app(
             "id": row["id"],
             "source": row["source"],
             "source_name": row["source_name"],
-            "title": row["title"],
+            "title": plain_title(row["title"]),
             "headline": row["headline"] if judged else None,
             "url": safe_url(row["url"]),
             "author": row["author"],

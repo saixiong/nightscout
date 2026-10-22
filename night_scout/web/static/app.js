@@ -185,7 +185,7 @@ function renderMorning(id, tab) {
   const app = $("#app");
   if (!M) {
     loading("Loading your morning…");
-    loadMorning().then(r => { if (!r.ok) return errorView(r); if ((location.hash.split("/")[1] || "morning") === "morning") { reset(); route(); } });
+    loadMorning().then(r => { if (!r.ok) return errorView(r); if (["morning", "actions"].includes(location.hash.split("/")[1])) { reset(); route(); } });
     return;
   }
   const st8 = morningState();
@@ -1009,8 +1009,8 @@ function pollRebuild() {
 /* ================= keys, sky, boot ================= */
 document.addEventListener("keydown", e => {
   if (/INPUT|TEXTAREA|SELECT/.test(e.target.tagName) || e.target.isContentEditable || $(".sheet-wrap") || $("#tour")) return;
-  const page = (location.hash || "#/morning").split("/")[1] || "morning";
-  if (page !== "morning" || !M || morningState() !== "normal") return;
+  const page = (location.hash || "#/digest").split("/")[1] || "digest";
+  if (!["morning", "actions"].includes(page) || !M || morningState() !== "normal") return;
   const ids = visibleCards().map(c => c.id), i = ids.indexOf(+cur);
   if (["ArrowDown", "j"].includes(e.key) && i < ids.length - 1) { e.preventDefault(); go(`#/morning/${ids[i + 1]}`); }
   if (["ArrowUp", "k"].includes(e.key) && i > 0) { e.preventDefault(); go(`#/morning/${ids[i - 1]}`); }
