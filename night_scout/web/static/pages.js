@@ -30,7 +30,8 @@ NS.pages.guide = sec => {
   $("#tourGo").onclick = startTour;
 };
 
-/* Tour steps follow real data: the first pick, the first pick with a Try-it, the first idea. */
+/* Tour steps follow real data: the Digest first; the Actions steps (first pick, first pick with
+   a Try-it, first idea) only when there are projects, since Actions come from projects. */
 function steps() {
   const M = NS.M, cards = NS.visibleCards();
   const first = cards[0], withTry = cards.find(c => c.actions.some(a => a.kind === "try_it")) || first;
@@ -38,15 +39,24 @@ function steps() {
   const st = M?.run?.stats || {};
   const proj = B()?.projects?.[0];
   const at = c => c ? `#/morning/${c.id}` : "#/morning";
+  const chat = typeof NS.openChat === "function";
   return [
-    { at: at(first), sel: ".funnel", t: "What happened overnight", x: `The scout found ${st.new ?? 0} new items, had Gemma judge the ${st.scored ?? 0} most promising, and kept ${cards.length}. Everything else was dropped on purpose.` },
-    { at: at(first), sel: "#list", t: "Your picks, ranked", x: "Each pick is tied to one of your projects and labelled Issue, Change, Improvement or Relevant." },
-    { at: at(first), sel: ".derive", t: "Why it's here", x: "The project it matters to, what it matched in that project's profile, and a suggested next step." },
-    { at: at(first), sel: ".why-box", t: "Scored against every project", x: "Gemma scores each item for every project and explains why. The best fit decides where it lands." },
-    { at: at(withTry), sel: ".tabs", t: "Act on it", x: "Try it in a throwaway sandbox, have Gemma research it, or save a note into the project. You always confirm first." },
-    { at: at(withTry), sel: ".votes", t: "Teach the scout", x: "👍 / 👎 nudge tonight's pre-filter toward or away from this source and its topics. ✕ hides it for good." },
-    ...(idea ? [{ at: `#/morning/idea-${idea.id}`, sel: ".list-h", t: "New project ideas", x: "Side projects Gemma thinks you'd enjoy, inspired by what it read last night and what you already build." }] : []),
-    { at: proj ? `#/projects/${encodeURIComponent(proj)}` : "#/projects", sel: ".how", t: "Projects are the yardstick", x: "Every item is judged against what's written here. Sharpen the interests and the scout gets sharper." },
+    { at: "#/digest", sel: "#tfilter", t: "Your Digest", x: "Gemma read last night's items against your topics. Up to 25 stories that matched 80 % or more are here, filed under your topics. Filter by topic, or by 🔖 Saved." },
+    { at: "#/digest", sel: "#list", t: "Every story, with its match", x: "The ring is how well it matched. Click one to jump to it in the feed; j and k step through." },
+    { at: "#/digest", sel: ".story .derive", t: "Why it's here", x: "The topic Gemma filed it under and the score. Weak titles get a short Gemma headline, with the original underneath." },
+    { at: "#/digest", sel: ".story .votes", t: "Keep it or quiet it", x: "🔖 keeps a story past tonight. 👎 hides it and ranks items like it lower. 🔇 mutes its source. Both can be undone." },
+    ...(chat ? [{ at: "#/digest", sel: "#askAll", t: "Ask Gemma", x: "✦ Ask opens a chat about tonight or one story. Gemma looks things up first: the night's items, web pages, YouTube transcripts, Hacker News." }] : []),
+    { at: "#/digest", sel: "#moreT", t: "Everything else", x: "The rest of the night, ranked by similarity to your topics, so nothing is hidden." },
+    { at: "#/digest", sel: "#editTopics", t: "Your topics", x: "This is what the Digest looks for. Type your own, in your own words. No projects needed." },
+    ...(proj ? [
+      { at: at(first), sel: ".funnel", t: "Actions: what happened overnight", x: `For your projects, the scout found ${st.new ?? 0} new items, had Gemma judge the ${st.scored ?? 0} most promising, and kept ${cards.length}. Everything else was dropped on purpose.` },
+      { at: at(first), sel: "#list", t: "Actions, ranked", x: "Each one is tied to one of your projects and labelled Issue, Change, Improvement or Relevant." },
+      { at: at(first), sel: ".why-box", t: "Scored against every project", x: "Gemma scores each item for every project and explains why. The best fit decides where it lands." },
+      { at: at(withTry), sel: ".tabs", t: "Act on it", x: "Try it in a throwaway sandbox, have Gemma research it, or save a note into the project. You always confirm first." },
+      { at: at(withTry), sel: ".votes", t: "Teach the scout", x: "👍 / 👎 nudge tonight's pre-filter toward or away from this source and its topics. ✕ hides it for good." },
+      ...(idea ? [{ at: `#/morning/idea-${idea.id}`, sel: ".list-h", t: "New project ideas", x: "Side projects Gemma thinks you'd enjoy, inspired by what it read last night and what you already build." }] : []),
+    ] : []),
+    { at: proj ? `#/projects/${encodeURIComponent(proj)}` : "#/projects", sel: proj ? ".how" : "#addProj", t: proj ? "Projects are the yardstick for Actions" : "Projects are optional", x: proj ? "Actions are judged against what's written here. Sharpen the interests and the scout gets sharper." : "Add a project folder and the scout also writes Actions: what to do about each item for that project." },
     { at: "#/sources", sel: "#addSrc", t: "Choose what it reads", x: "Websites, YouTube channels, newsletters, Reddit, Hacker News, Bluesky, GitHub and more. Official feeds only." },
     { at: "#/settings/providers", sel: ".roles", t: "Your models, your machine", x: "Everything runs on Ollama locally by default. Cloud providers are optional, and their keys live in your system keychain." },
   ];
