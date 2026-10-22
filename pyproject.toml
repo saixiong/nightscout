@@ -22,6 +22,7 @@ dependencies = [
   "youtube-transcript-api>=1.0",
   "markdown-it-py>=3.0",
   "keyring>=25",
+  "pypdf>=4",
 ]
 
 [project.urls]

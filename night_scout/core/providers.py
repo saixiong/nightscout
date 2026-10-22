@@ -342,6 +342,11 @@ def _openai_message(m: dict[str, Any]) -> dict[str, Any]:
             "content": str(m.get("content") or ""),
         }
     out: dict[str, Any] = {"role": role, "content": str(m.get("content") or "")}
+    if role == "user" and m.get("images"):  # vision: text part + one image_url part per image
+        out["content"] = [{"type": "text", "text": out["content"]}] + [
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{i}"}}
+            for i in m["images"]
+        ]
     if role == "assistant" and m.get("tool_calls"):
         out["content"] = out["content"] or None
         out["tool_calls"] = [

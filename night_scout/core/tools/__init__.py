@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..config import Config
+from .app import my_setup, night_scout_help, propose_source, propose_topic, search_all_nights
 from .base import ToolContext, fail
 from .media import hn_search, youtube_transcript
 from .search import BRAVE_KEY_ID, web_search
@@ -91,6 +92,63 @@ TOOLS: dict[str, Tool] = {
             {"query": "What to search for."},
             ("query",),
             hn_search,
+        ),
+        Tool(
+            "night_scout_help",
+            "Night Scout help",
+            "☾",
+            "Look up how Night Scout works in its Guide: setup, the Digest, topics, Actions, "
+            "sources, models, privacy, schedule, the command line, troubleshooting.",
+            {"query": "What to look up, e.g. 'add a YouTube channel'."},
+            ("query",),
+            night_scout_help,
+        ),
+        Tool(
+            "my_setup",
+            "Your setup",
+            "⚙",
+            "Read this reader's own Night Scout setup and history: topics, projects, models, "
+            "the last run's sources (ok or failed, items fetched), the last 5 runs' numbers and "
+            "how many stories scored over the Digest bar.",
+            {"part": "One of all, sources, runs, topics, projects, models."},
+            (),
+            my_setup,
+        ),
+        Tool(
+            "search_all_nights",
+            "All nights",
+            "🗓",
+            "Search every item Night Scout has fetched on any night (not just one Digest): "
+            "titles, summaries, source, day, topic and score.",
+            {"query": "Words to look for."},
+            ("query",),
+            search_all_nights,
+        ),
+        Tool(
+            "propose_source",
+            "Suggest a source",
+            "➕",
+            "Offer to add a source. Checks it first; the reader gets an Add button and nothing "
+            "changes until they click it. Types: website, newsletter, podcast, arxiv, youtube, "
+            "reddit, hackernews, bluesky, mastodon, github.",
+            {
+                "type": "Source type, e.g. youtube, website, github, reddit.",
+                "value": "What to follow: a URL, a YouTube @handle or channel URL, a subreddit, "
+                "a keyword or owner/repo.",
+                "why": "One short line on why.",
+            },
+            ("type", "value"),
+            propose_source,
+        ),
+        Tool(
+            "propose_topic",
+            "Suggest a topic",
+            "🏷",
+            "Offer to add a Digest topic. The reader gets an Add button; nothing changes until "
+            "they click it.",
+            {"topic": "The topic in a few words."},
+            ("topic",),
+            propose_topic,
         ),
         Tool(
             "web_search",

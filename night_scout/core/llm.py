@@ -316,6 +316,8 @@ def _ollama_message(m: dict[str, Any]) -> dict[str, Any]:
         out["tool_calls"] = [
             {"function": {"name": tc.name, "arguments": tc.arguments}} for tc in m["tool_calls"]
         ]
+    if role == "user" and m.get("images"):  # base64, no data: prefix (vision models)
+        out["images"] = [str(i) for i in m["images"]]
     return out
 
 
