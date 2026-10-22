@@ -31,8 +31,9 @@ from ..core.config import Config, Sources, load_config, save_config
 from ..core.db import Store
 from ..core.digest import ACTION_LABEL
 from ..core.feedback import compute_weights
-from ..core.llm import OllamaClient
+from ..core.llm import LLM
 from ..core.profile import build_profile_file, load_profile
+from ..core.providers import make_llm
 from ..core.safety import check_commands
 from ..core.sandbox import Plan, choose_mode
 
@@ -203,10 +204,10 @@ def create_app(
         url = path + (f"?msg={quote(msg[:400])}" if msg else "") + (f"#{anchor}" if anchor else "")
         return RedirectResponse(url, status_code=303)
 
-    def llm() -> OllamaClient:
+    def llm() -> LLM:
         if "llm" not in state:
-            state["llm"] = OllamaClient(state["cfg"].model)
-        client: OllamaClient = state["llm"]
+            state["llm"] = make_llm(state["cfg"], "judge")
+        client: LLM = state["llm"]
         return client
 
     def card(row: Any) -> dict[str, Any]:

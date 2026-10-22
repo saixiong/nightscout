@@ -19,8 +19,9 @@ import yaml
 from pydantic import BaseModel, Field
 
 from .config import Config, ProjectRef
-from .llm import LLM, ModelError, OllamaClient
+from .llm import LLM, ModelError
 from .models import utcnow
+from .providers import close_llm, make_llm
 
 log = logging.getLogger(__name__)
 
@@ -254,7 +255,7 @@ def heuristic_profile(scan: ProjectScan) -> ProjectProfile:
 
 def build_profile(cfg: Config, llm: LLM | None = None) -> dict[str, Any]:
     own = llm is None
-    client: LLM = llm or OllamaClient(cfg.model)
+    client: LLM = llm or make_llm(cfg, "judge")
     projects: list[dict[str, Any]] = []
     try:
         for ref in cfg.projects:
@@ -274,8 +275,8 @@ def build_profile(cfg: Config, llm: LLM | None = None) -> dict[str, Any]:
                 {"name": scan.name, "path": scan.path, **prof.model_dump(), "generated_by": by}
             )
     finally:
-        if own and isinstance(client, OllamaClient):
-            client.close()
+        if own:
+            close_llm(client)
     return {"generated_at": utcnow().isoformat(timespec="seconds"), "projects": projects}
 
 

@@ -21,11 +21,12 @@ from .digest import rank_for_digest, write_digest
 from .feedback import compute_weights
 from .fetch import fetch_all
 from .judge import judge_item, propose_actions
-from .llm import LLM, ModelError, ModelUnavailable, OllamaClient
+from .llm import LLM, ModelError, ModelUnavailable
 from .lock import RunLock
 from .models import utcnow
 from .prefilter import doc_text, query_texts, rank_candidates
 from .profile import load_profile
+from .providers import Embedder, close_llm, embed_model_name, ensure_ready, make_embedder, make_llm
 from .sources.youtube import fetch_transcript
 
 log = logging.getLogger(__name__)
@@ -71,6 +72,7 @@ def _run_locked(
     own_store = store is None
     store = store or Store(cfg.db_file())
     own_llm = llm is None and not fetch_only
+    embedder: Embedder | None = None
     run_id = store.start_run()
     result = RunResult(run_id=run_id, ok=True)
     try:
@@ -81,8 +83,10 @@ def _run_locked(
         if statuses and all(not s.ok for s in statuses):
             result.ok = False
         if not fetch_only:
-            llm = llm or OllamaClient(cfg.model)
-            _judge_and_digest(cfg, store, llm, run_id, result, transcript_fn, today)
+            if llm is None:
+                llm = make_llm(cfg, "judge")
+                embedder = make_embedder(cfg)
+            _judge_and_digest(cfg, store, llm, run_id, result, transcript_fn, today, embedder)
         store.finish_run(run_id, "done" if result.ok else "failed", result.stats)
     except Exception as e:
         log.exception("run %s failed", run_id)
@@ -90,8 +94,9 @@ def _run_locked(
         store.finish_run(run_id, "failed", result.stats)
         result.ok = False
     finally:
-        if own_llm and isinstance(llm, OllamaClient):
-            llm.close()
+        if own_llm:
+            close_llm(llm)
+            close_llm(embedder)
         if own_store:
             store.close()
     return result
@@ -123,7 +128,9 @@ def _judge_and_digest(
     result: RunResult,
     transcript_fn,
     today: date | None,
+    embedder: Embedder | None = None,
 ) -> None:
+    emb: Embedder = embedder or llm
     try:
         profile = load_profile(cfg.profile_file())
     except FileNotFoundError as e:
@@ -136,8 +143,7 @@ def _judge_and_digest(
         return
 
     try:
-        if isinstance(llm, OllamaClient):
-            llm.ensure_ready()
+        ensure_ready(llm)
     except ModelUnavailable as e:
         _status(store, run_id, result, "pipeline:model", "Gemma", False, str(e))
         result.ok = False
@@ -154,11 +160,11 @@ def _judge_and_digest(
     # Embeddings: near-duplicate detection and semantic pre-filter. Optional.
     item_vecs: dict[int, list[float]] | None = None
     query_vecs: list[list[float]] | None = None
-    if pending and llm.has_embed_model():
+    if pending and emb.has_embed_model():
         try:
-            vecs = llm.embed([doc_text(r) for r in pending])
+            vecs = emb.embed([doc_text(r) for r in pending])
             item_vecs = {r["id"]: v for r, v in zip(pending, vecs, strict=True)}
-            query_vecs = llm.embed(query_texts(profile))
+            query_vecs = emb.embed(query_texts(profile))
         except ModelError as e:
             log.warning("embeddings unavailable, keyword pre-filter only: %s", e)
             item_vecs = None
@@ -179,7 +185,7 @@ def _judge_and_digest(
             "pipeline:embed",
             "Embeddings",
             False,
-            f"{cfg.model.embed} not installed; keyword pre-filter only",
+            f"{embed_model_name(cfg)} not installed; keyword pre-filter only",
         )
     if item_vecs:
         dups = near_duplicate_groups(item_vecs, cfg.thresholds.near_duplicate)
