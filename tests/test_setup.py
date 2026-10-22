@@ -81,13 +81,27 @@ def test_profile_entries_upsert_and_remove_keep_header(tmp_path: Path) -> None:
 
 def test_setup_status(tmp_path: Path) -> None:
     cfg = Config(data_dir=str(tmp_path / "data"))
-    assert setup_mod.setup_status(cfg) == {"needed": True, "reasons": ["no_projects"]}
+    assert setup_mod.setup_status(cfg) == {
+        "needed": True,
+        "reasons": ["nothing_to_scout"],
+        "topics": [],
+    }
     p = _proj(tmp_path, "app")
     cfg.projects.append(ProjectRef(path=str(p)))
     assert setup_mod.setup_status(cfg)["reasons"] == ["no_profile"]
     cfg.data_path().mkdir(parents=True)
     setup_mod.upsert_profile_entry(cfg.profile_file(), {"name": "app", "purpose": "x"})
-    assert setup_mod.setup_status(cfg) == {"needed": False, "reasons": []}
+    assert setup_mod.setup_status(cfg) == {"needed": False, "reasons": [], "topics": []}
+
+
+def test_setup_status_topics_without_projects(tmp_path: Path) -> None:
+    """The Digest doesn't need projects: one typed topic is enough to finish Setup."""
+    from night_scout.core.profile import save_topics
+
+    cfg = Config(data_dir=str(tmp_path / "data"))
+    save_topics(cfg.profile_file(), ["Local LLMs", " local llms ", "AI safety"])
+    st = setup_mod.setup_status(cfg)
+    assert st == {"needed": False, "reasons": [], "topics": ["Local LLMs", "AI safety"]}
 
 
 def test_start_run_detaches_and_logs(tmp_path: Path, monkeypatch) -> None:

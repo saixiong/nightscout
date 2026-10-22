@@ -141,6 +141,9 @@ class Thresholds(BaseModel):
     near_duplicate: float = Field(default=0.92, ge=0.5, le=1.0)
     # New side-project ideas proposed after each run's digest (0 turns them off).
     ideas: int = Field(default=2, ge=0, le=5)
+    # the Digest (by topic): Gemma's topic score needed to make it, and the most it shows
+    digest_bar: float = Field(default=0.8, ge=0.0, le=1.0)
+    digest_max: int = Field(default=25, ge=1, le=100)
 
 
 class ProjectRef(BaseModel):

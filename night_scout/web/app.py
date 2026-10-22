@@ -11,6 +11,7 @@ import functools
 import json
 import logging
 import os
+import re
 import secrets
 import sqlite3
 import sys
@@ -47,13 +48,14 @@ from ..core.config import (
     split_ref,
 )
 from ..core.db import Store
+from ..core.digest import day_window, split_digest
 from ..core.discover import add_source
-from ..core.feedback import MUTE_AT, compute_weights
+from ..core.feedback import MUTE_AT, MUTE_VOTES, compute_weights
 from ..core.http import PoliteClient, SourceError
 from ..core.ideas import start_project_from_idea
 from ..core.llm import LLM, ModelError
 from ..core.models import utcnow
-from ..core.profile import build_profile_file, load_profile, profile_project
+from ..core.profile import Profile, build_profile_file, load_profile, profile_project, save_topics
 from ..core.providers import PRESETS, make_llm, ollama_models, ollama_pull, preset, test_provider
 from ..core.safety import check_commands
 from ..core.sandbox import Plan, choose_mode
@@ -208,6 +210,19 @@ Phrase = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, m
 
 class VoteBody(BaseModel):
     value: str
+
+
+class TopicsBody(BaseModel):
+    topics: list[str] = Field(max_length=40)
+
+
+class SaveBody(BaseModel):
+    saved: bool = True
+
+
+class MuteBody(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    muted: bool = True
 
 
 class ConfirmBody(BaseModel):
@@ -371,7 +386,8 @@ def create_app(
             "same-origin"  # no-referrer makes browsers send Origin: null
         )
         resp.headers["Content-Security-Policy"] = (
-            "default-src 'self'; img-src 'self' data:; style-src 'self'; "
+            "default-src 'self'; img-src 'self' data: https://i.ytimg.com; style-src 'self'; "
+            "frame-src https://www.youtube-nocookie.com; "
             "script-src 'self'; frame-ancestors 'none'; form-action 'self'"
         )
         if is_api:
@@ -626,6 +642,7 @@ def create_app(
             "pipeline": pipeline,
             "sources_count": n_sources,
             "projects": [p["name"] for p in profile_projects()],
+            "topics": digest_profile().topics,
             "schedule": schedule_info(),
             "sandbox": sandbox_info(),
             "thresholds": c.thresholds.model_dump(),
@@ -682,6 +699,141 @@ def create_app(
             "idea_items": idea_items,
             "projects": [p["name"] for p in projects],
         }
+
+    # -- the Digest (by topic) ----------------------------------------------------------------
+    def digest_profile() -> Profile:
+        try:
+            return load_profile(state["cfg"].profile_file())
+        except (FileNotFoundError, OSError, yaml.YAMLError):
+            return Profile(projects=[])
+
+    def story(row: sqlite3.Row, actions_day: set[int], full: bool) -> dict[str, Any]:
+        extra = _json(row["extra"], {})
+        judged = row["summary"] is not None
+        outline = _json(row["outline"], []) if judged else []
+        s: dict[str, Any] = {
+            "id": row["id"],
+            "source": row["source"],
+            "source_name": row["source_name"],
+            "title": row["title"],
+            "headline": row["headline"] if judged else None,
+            "url": safe_url(row["url"]),
+            "author": row["author"],
+            "published": row["published_at"],
+            "also_seen": _json(row["also_seen"], []),
+            "video_id": extra.get("video_id") if row["source"] == "youtube" else None,
+            "judged": judged,
+            "topic": row["digest_topic"] if judged else None,
+            "relevance": row["digest_relevance"] if judged else None,
+            "match": max(0.0, min(1.0, float(row["prefilter"] or 0.0))),
+            "summary": row["summary"] if judged else None,
+            "outline": [str(x) for x in outline if isinstance(x, str)][:5],
+            "saved": bool(row["saved_at"]),
+            "vote": store.item_feedback(row["id"]),
+        }
+        if full:
+            s["text"] = (row["text"] or "")[:900]
+        if row["id"] in actions_day and judged and row["impact"] in IMPACTS:
+            s["action"] = {
+                "kind": row["impact"],
+                "project": row["best_project"],
+                "score": row["best_score"],
+                "next_step": row["next_step"],
+            }
+        return s
+
+    @app.get("/api/digest")
+    def digest_view(day: str | None = None) -> Any:
+        c = state["cfg"]
+        days = sorted(set(store.first_seen_days()) | set(store.digest_days()), reverse=True)
+        if day is None:
+            day = days[0] if days else None
+        elif not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+            raise HTTPException(400, "day must be YYYY-MM-DD")
+        prof = digest_profile()
+        topics = prof.digest_topics
+        out: dict[str, Any] = {
+            "day": day,
+            "days": days,
+            "topics": prof.topics,
+            "digest_topics": topics,
+            "projects": prof.names,
+            "bar": c.thresholds.digest_bar,
+            "max": c.thresholds.digest_max,
+            "stories": [],
+            "rest": [],
+            "saved": [],
+            "stats": None,
+            "run": None,
+        }
+        weights = compute_weights(store)
+        saved = store.saved_items()
+        if day is not None:
+            try:
+                start, end = day_window(date.fromisoformat(day))
+            except ValueError as e:
+                raise HTTPException(400, "day must be a real date") from e
+            rows = store.items_between(start, end)
+            digest_row = store.digest(day)
+            actions_day = set(_json(digest_row["item_ids"], [])) if digest_row else set()
+            stories, rest = split_digest(
+                rows, topics, weights, c.thresholds.digest_bar, c.thresholds.digest_max
+            )
+            out["stories"] = [story(r, actions_day, True) for r in stories]
+            out["rest"] = [story(r, actions_day, True) for r in rest]
+            run = None
+            if digest_row and digest_row["run_id"]:
+                run = store.conn.execute(
+                    "SELECT * FROM runs WHERE id=?", (digest_row["run_id"],)
+                ).fetchone()
+            elif rows:
+                run = store.conn.execute(
+                    "SELECT * FROM runs WHERE id=?", (rows[-1]["run_id"],)
+                ).fetchone()
+            out["run"] = run_dict(run)
+            out["stats"] = {
+                "new": len(rows),
+                "judged": sum(1 for r in rows if r["summary"] is not None),
+            }
+        out["saved"] = [story(r, set(), True) for r in saved]
+        return out
+
+    @app.get("/api/topics")
+    def get_topics() -> Any:
+        return {"topics": digest_profile().topics}
+
+    @app.put("/api/topics")
+    def put_topics(body: TopicsBody) -> Any:
+        if jobs.get("profile")["state"] == "running":
+            raise HTTPException(409, "A profile rebuild is running; save after it finishes.")
+        try:
+            topics = save_topics(state["cfg"].profile_file(), body.topics)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        return {"ok": True, "topics": topics}
+
+    @app.post("/api/item/{item_id}/save")
+    def save_item(item_id: int, body: SaveBody) -> Any:
+        if store.item(item_id) is None:
+            raise HTTPException(404, "No such item")
+        store.set_saved(item_id, body.saved)
+        return {"ok": True, "saved": body.saved}
+
+    @app.post("/api/source/mute")
+    def mute_source(body: MuteBody) -> Any:
+        known = store.conn.execute(
+            "SELECT 1 FROM items WHERE source_name=? LIMIT 1", (body.name,)
+        ).fetchone()
+        if known is None:
+            raise HTTPException(404, "No source by that name")
+        with store.tx() as conn:  # mute and unmute both start from a clean slate for the source
+            conn.execute(
+                "DELETE FROM feedback WHERE target_type='source' AND target=?", (body.name,)
+            )
+        if body.muted:
+            store.add_feedback("source", body.name, MUTE_VOTES, None)
+        w = compute_weights(store)
+        return {"ok": True, "name": body.name, "muted": w.muted(body.name)}
 
     @app.get("/api/run")
     def run_status() -> Any:

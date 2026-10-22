@@ -67,13 +67,14 @@ def doc_text(row: sqlite3.Row) -> str:
 
 
 def query_texts(profile: Profile) -> list[str]:
-    """One retrieval query per interest, wish and key dependency (EmbeddingGemma format)."""
+    """One retrieval query per interest, wish, key dependency and topic (EmbeddingGemma format)."""
     out: list[str] = []
     for p in profile.projects:
         phrases = [p.get("purpose") or ""]
         for key in ("interests", "would_want_to_know", "key_dependencies"):
             phrases += [str(x) for x in p.get(key) or []]
         out += [f"task: search result | query: {ph}" for ph in phrases if ph.strip()]
+    out += [f"task: search result | query: {t}" for t in profile.topics if t.strip()]
     return out
 
 

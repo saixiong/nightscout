@@ -15,7 +15,7 @@ from typing import Any
 import yaml
 
 from .config import Config, ProjectRef
-from .profile import append_profile_entry
+from .profile import append_profile_entry, clean_topics
 from .schedule import run_command
 
 # Files that tell us a folder is a project (and that Gemma has something to read).
@@ -207,15 +207,26 @@ def profiled_names(path: Path) -> set[str]:
     }
 
 
+def profile_topics(path: Path) -> list[str]:
+    try:
+        _, data = _read_profile(path)
+    except (FileNotFoundError, ValueError, yaml.YAMLError, OSError):
+        return []
+    return clean_topics(data.get("topics"))
+
+
 def setup_status(cfg: Config) -> dict[str, Any]:
-    """Does this install still need the walkthrough? (No projects, or none profiled yet.)"""
+    """Does this install still need the walkthrough? It has something to scout for once it has
+    a typed topic or a profiled project (the Digest works without projects)."""
     reasons: list[str] = []
+    topics = profile_topics(cfg.profile_file())
     profiled = profiled_names(cfg.profile_file())
-    if not cfg.projects:
-        reasons.append("no_projects")
-    elif not any(project_name(r) in profiled for r in cfg.projects):
+    has_project = any(project_name(r) in profiled for r in cfg.projects)
+    if not topics and not cfg.projects:
+        reasons.append("nothing_to_scout")
+    elif not topics and not has_project:
         reasons.append("no_profile")
-    return {"needed": bool(reasons), "reasons": reasons}
+    return {"needed": bool(reasons), "reasons": reasons, "topics": topics}
 
 
 # -- run now ------------------------------------------------------------------------------

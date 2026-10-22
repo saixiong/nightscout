@@ -287,8 +287,16 @@ def build_profile(cfg: Config, llm: LLM | None = None) -> dict[str, Any]:
 
 
 def build_profile_file(cfg: Config, llm: LLM | None = None) -> Path:
-    data = build_profile(cfg, llm)
     out = cfg.profile_file()
+    kept: list[str] = []
+    if out.exists():  # your typed topics aren't Gemma's to regenerate: keep them
+        try:
+            kept = load_profile(out).topics
+        except (OSError, yaml.YAMLError):
+            kept = []
+    data = build_profile(cfg, llm)
+    if kept:
+        data = {"topics": kept, **data}
     out.parent.mkdir(parents=True, exist_ok=True)
     header = (
         "# Night Scout profile. Edit freely: this is what the scout thinks each project\n"
@@ -348,10 +356,22 @@ def append_profile_entry(path: Path, entry: dict[str, Any]) -> None:
 @dataclass
 class Profile:
     projects: list[dict[str, Any]]
+    # The reader's own topics (typed in Setup or on the Digest). They drive the Digest; projects
+    # drive Actions. A profile may have topics and no projects.
+    topics: list[str] = field(default_factory=list)
 
     @property
     def names(self) -> list[str]:
         return [p["name"] for p in self.projects]
+
+    @property
+    def digest_topics(self) -> list[str]:
+        """What the Digest groups by: your topics, or your project names if you typed none."""
+        return self.topics or self.names
+
+    @property
+    def empty(self) -> bool:
+        return not self.projects and not self.topics
 
     def keywords(self) -> dict[str, set[str]]:
         """Lowercased phrases per project, for the cheap pre-filter."""
@@ -364,6 +384,8 @@ class Profile:
                     if phrase:
                         words.add(phrase)
             out[p["name"]] = words
+        if self.topics:
+            out["topics"] = {t.lower().strip() for t in self.topics if t.strip()}
         return out
 
     def describe(self, project: dict[str, Any]) -> str:
@@ -379,9 +401,54 @@ class Profile:
         return "\n".join(f"- {self.describe(p)}" for p in self.projects)
 
 
+MAX_TOPICS = 20
+MAX_TOPIC_LEN = 60
+
+
+def clean_topics(raw: Any) -> list[str]:
+    """Trimmed, de-duplicated (case-insensitively) topic strings, capped in count and length."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for t in raw if isinstance(raw, list) else []:
+        t = " ".join(str(t).split())[:MAX_TOPIC_LEN].strip()
+        if t and t.casefold() not in seen:
+            seen.add(t.casefold())
+            out.append(t)
+    return out[:MAX_TOPICS]
+
+
 def load_profile(path: Path) -> Profile:
     if not path.exists():
         raise FileNotFoundError(f"No profile at {path}. Run `night-scout profile` first.")
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(data, dict):
+        data = {}
     projects = [p for p in data.get("projects") or [] if isinstance(p, dict) and p.get("name")]
-    return Profile(projects=projects)
+    return Profile(projects=projects, topics=clean_topics(data.get("topics")))
+
+
+def save_topics(path: Path, topics: list[str]) -> list[str]:
+    """Write the top-level `topics:` list, keeping projects and any hand edits. Atomic."""
+    data: dict[str, Any] = {}
+    header = ""
+    if path.exists():
+        text = path.read_text(encoding="utf-8")
+        for line in text.splitlines():  # keep the comment header at the top of the file
+            if not line.startswith("#"):
+                break
+            header += line + "\n"
+        loaded = yaml.safe_load(text) or {}
+        if not isinstance(loaded, dict) or not isinstance(loaded.get("projects", []), list):
+            raise ValueError(f"{path} isn't a profile (no `projects:` list); fix it first.")
+        data = loaded
+    cleaned = clean_topics(topics)
+    out: dict[str, Any] = {"topics": cleaned}
+    out.update({k: v for k, v in data.items() if k != "topics"})
+    out.setdefault("projects", [])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(
+        header + yaml.safe_dump(out, sort_keys=False, allow_unicode=True), encoding="utf-8"
+    )
+    tmp.replace(path)
+    return cleaned
