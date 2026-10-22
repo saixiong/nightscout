@@ -23,6 +23,10 @@ dependencies = [
   "markdown-it-py>=3.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/saixiong/nightscout"
+Issues = "https://github.com/saixiong/nightscout/issues"
+
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.5", "mypy>=1.10", "types-PyYAML"]
 

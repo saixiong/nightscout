@@ -35,7 +35,7 @@ ollama pull embeddinggemma-2:270m
 ollama pull gemma4:e4b              # optional smaller fallback
 
 # 2. Night Scout
-git clone https://github.com/<you>/night-scout && cd night-scout
+git clone https://github.com/saixiong/nightscout && cd nightscout
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e .
 
