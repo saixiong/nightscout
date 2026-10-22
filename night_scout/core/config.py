@@ -47,9 +47,14 @@ class YouTubeSource(BaseModel):
     transcripts: bool = True
 
 
+RssKind = Literal["feed", "website", "newsletter", "podcast", "arxiv"]
+
+
 class RssSource(BaseModel):
     name: str
     url: str
+    # Only for display: how the feed was added. Every kind is fetched the same way.
+    kind: RssKind = "feed"
 
 
 HNList = Literal["top", "new", "best", "show", "ask"]
@@ -106,6 +111,8 @@ class Sources(BaseModel):
     bluesky: BlueskySource | None = None
     mastodon: list[MastodonSource] = Field(default_factory=list)
     github: GitHubSource | None = None
+    # SourceTask keys (see `night-scout sources` / the Sources page) that are switched off.
+    disabled: list[str] = Field(default_factory=list)
 
 
 class Schedule(BaseModel):
