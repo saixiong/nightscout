@@ -177,6 +177,7 @@ function renderBox() {
   input.onkeydown = e => { if (e.key === "Enter" && !e.isComposing) $("#chatGo").click(); };
   if (!busy && C.open) input.focus({ preventScroll: true });
 }
+const secs = v => (typeof v === "number" ? v.toFixed(1) : "?") + "s";
 /* a tool result as indented "key: value" lines, so page text reads as text */
 function pretty(v, ind = "") {
   if (Array.isArray(v)) return v.map(x => x && typeof x === "object" ? `${ind}-\n${pretty(x, ind + "  ")}` : `${ind}- ${x}`).join("\n");
@@ -190,7 +191,7 @@ function toolCard(m) {
   try { res = pretty(JSON.parse(res)); } catch (e) { /* clipped JSON: show as is */ }
   const open = C.openCards.has(m.id) ? " open" : "";
   return `<details class="tcall${t.ok ? "" : " bad"}" data-mid="${m.id}"${open}><summary><span class="ti">${esc(t.icon || "⚙")}</span><b>${esc(t.label || t.name)}</b>
-    <span class="targ" title="${esc(arg)}">${esc(arg)}</span><span class="tsec">${t.ok ? "✓" : "✕"} ${esc(m.seconds ?? "")}s</span></summary><pre>${esc(res)}</pre></details>`;
+    <span class="targ" title="${esc(arg)}">${esc(arg)}</span><span class="tsec">${t.ok ? "✓" : "✕"} ${secs(m.seconds)}</span></summary><pre>${esc(res)}</pre></details>`;
 }
 function hello() {
   const on = new Set((C.meta?.tools || []).filter(t => t.enabled).map(t => t.name));
@@ -229,7 +230,7 @@ function renderMsgs() {
   for (const m of msgs) {
     if (m.role === "user") html += `<div class="u">${esc(m.content)}</div>`;
     else if (m.role === "tool") html += toolCard(m);
-    else if (m.role === "assistant") html += `<div class="a">${md(m.content)}<p class="asec">answered in ${esc(m.seconds ?? "?")}s${m.model ? ` · ${esc(m.model)}` : ""}</p></div>`;
+    else if (m.role === "assistant") html += `<div class="a">${md(m.content)}<p class="asec">answered in ${secs(m.seconds)}${m.model ? ` · ${esc(m.model)}` : ""}</p></div>`;
     else if (m.role === "error") html += `<div class="a err"><p>${esc(m.content)}</p></div>`;
   }
   const seen = msgs.some(m => m.role === "user" && C.pending && m.turn === C.pending.turn);
