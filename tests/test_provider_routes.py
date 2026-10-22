@@ -147,6 +147,20 @@ def test_live_models_upstream_errors_are_502_with_scrubbed_text(env, offline, up
     assert "sk-ant-wrong" not in r.text
 
 
+def test_anthropic_on_a_loopback_url_still_leaves_the_machine(env, offline) -> None:
+    client, _t, _ids, _cfg0, _proj, config_path = env
+    data = _cfg(config_path)
+    data["providers"] = [
+        {"id": "anthropic", "kind": "anthropic", "base_url": "http://127.0.0.1:9", "models": ["m"]}
+    ]
+    config_path.write_text(yaml.safe_dump(data))
+    secrets.set_key("anthropic", KEY)
+    r = client.put("/api/roles", json={"chat": "anthropic/m"})  # loads config.yaml from disk
+    assert r.status_code == 200
+    assert _prov(client, "anthropic")["local"] is False
+    assert client.get("/api/chat/meta").json()["model"]["local"] is False
+
+
 def test_preset_with_env_key_shows_before_saving(env, offline, monkeypatch) -> None:
     client, *_ = env
     monkeypatch.setenv("GEMINI_API_KEY", "AIza-env-0123456789abcdef")

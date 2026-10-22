@@ -111,8 +111,19 @@ PRESETS: dict[str, ProviderConfig] = {
 }
 
 
+CLOUD_PRESETS = frozenset(k for k, p in PRESETS.items() if not p.is_local)
+
+
 def preset(key: str) -> ProviderConfig:
     return PRESETS[key].model_copy(deep=True)
+
+
+def runs_locally(provider: ProviderConfig) -> bool:
+    """Do calls to this provider stay on this machine? Ollama and loopback servers do. A cloud
+    preset never does, even with a loopback base_url: a local proxy still forwards to the cloud."""
+    if provider.id in CLOUD_PRESETS:
+        return False
+    return provider.kind == "ollama" or provider.is_local
 
 
 class Embedder(Protocol):

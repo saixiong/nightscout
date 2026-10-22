@@ -578,3 +578,16 @@ def test_provider_test_redirect_is_not_key_accepted() -> None:
         cfg, "r", api_key="sk-0123456789abc", transport=httpx.MockTransport(handler)
     )
     assert not steps[1].ok and "redirect" in steps[1].detail
+
+
+def test_cloud_presets_never_count_as_local() -> None:
+    """A loopback base_url on a cloud preset (a local proxy, or a test fake) still leaves the
+    machine; LM Studio, custom loopback servers and Ollama stay local."""
+    from night_scout.core.providers import runs_locally
+
+    assert runs_locally(_provider()) is False  # anthropic → http://127.0.0.1:9
+    assert runs_locally(preset("google").model_copy(update={"base_url": FAKE})) is False
+    assert runs_locally(preset("lmstudio")) is True
+    assert runs_locally(ProviderConfig(id="box", base_url="http://127.0.0.1:8080/v1")) is True
+    assert runs_locally(ProviderConfig(id="far", base_url="https://llm.example.com/v1")) is False
+    assert runs_locally(Config().provider("ollama")) is True

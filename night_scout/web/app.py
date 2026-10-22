@@ -63,6 +63,7 @@ from ..core.providers import (
     ollama_models,
     ollama_pull,
     preset,
+    runs_locally,
     test_provider,
 )
 from ..core.safety import check_commands
@@ -679,7 +680,7 @@ def create_app(
         pid, model = split_ref(ref)
         try:
             p = c.provider(pid)
-            local = p.kind == "ollama" or urlsplit(p.base_url).hostname in LOOPBACK
+            local = runs_locally(p)
             name = p.name or p.id
         except KeyError:
             local, name = False, pid
@@ -1261,12 +1262,7 @@ def create_app(
         return {"ok": True, "path": pretty_path(str(path))}
 
     # -- providers, keys, roles ----------------------------------------------------------------
-    def is_local(p: ProviderConfig) -> bool:
-        return p.kind == "ollama" or urlsplit(p.base_url).hostname in (
-            "127.0.0.1",
-            "localhost",
-            "::1",
-        )
+    is_local = runs_locally
 
     def quick_status(p: ProviderConfig) -> tuple[str, str | None]:
         """connected/offline for local servers (cheap); 'unknown' for remote ones."""
@@ -1521,7 +1517,7 @@ def create_app(
             key = get_key(p.id, p.api_key_env)
         except SecretStoreUnavailable:
             key = None
-        if not key and not p.is_local:
+        if not key and not runs_locally(p):
             raise HTTPException(400, f"Add a {p.label} API key first.")
         try:
             models = fetch_models(p, key)
