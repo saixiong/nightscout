@@ -16,8 +16,12 @@ and some mornings it should say "nothing cleared the bar".
 
 - **Project-aware.** It reads your READMEs and dependency files and builds a small,
   editable profile of what each project cares about.
-- **Action-first.** Every pick comes with a reason ("relevant to *X* because…") and one to
-  three concrete actions.
+- **Action-first.** Every pick is labelled for the project it fits (Issue, Change,
+  Improvement or Relevant), shows the profile entry it matched and why, and comes with a
+  next step plus one to three concrete actions. Gemma also suggests two small new project
+  ideas each night.
+- **Your models.** Ollama by default; LM Studio, any OpenAI-compatible server, OpenAI or
+  OpenRouter if you want (Settings → AI Providers). API keys live in the OS keychain.
 - **Local and free.** Open weights on your own machine: your project context never leaves
   the laptop, each run costs $0, and it can run every night forever.
 - **Nothing runs on its own.** The nightly run only proposes. Try-it plans run in a
