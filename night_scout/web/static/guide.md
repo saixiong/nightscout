@@ -67,12 +67,21 @@ Projects are optional; they power Actions. The Projects page is what the scout j
 
 # Sources
 
-Night Scout only uses official feeds and public APIs. No logins, no scraping.
+Night Scout reads official feeds and public APIs, with no logins. The one exception is opt-in: searching a whole YouTube channel for your key terms (below) uses the YouTube Data API if you've added a key, otherwise yt-dlp, which reads YouTube's public pages.
 
 - **Websites and blogs**: paste the address. Night Scout finds the site's RSS or Atom feed. Sites without a feed can't be followed.
 - **YouTube channels**: paste the channel address or @handle. Transcripts are included, so Gemma judges what's said, not just the title.
 - **Newsletters and podcasts**: anything with an RSS feed (Substack, Ghost, Buttondown, most podcasts).
 - **Hacker News, Reddit, Bluesky, Mastodon, GitHub, arXiv, dev.to**: lists, keywords, subreddits, hashtags, releases and repo searches.
+
+**Look back.** When you add a YouTube channel, website, newsletter, podcast, arXiv category or subreddit, choose how many days back the first night reads (1 to 14, default 3). It's also how far a run catches up after nights the scout didn't run. YouTube's feed only lists a channel's 15 newest videos, so a busy channel may not reach that far.
+
+**Scout key terms.** Add comma-separated terms to the same sources (up to 10). A term matches a whole word or phrase in the title or description, in any case.
+- *Once, when you add the source* (or add new terms with **Edit**): a YouTube channel is searched as a whole, up to 10 videos per term, any age. Night Scout keeps only the videos that really mention the term; YouTube's own search is loose. A website, newsletter or subreddit has its feed checked, any age; posts the feed no longer lists can't be searched.
+- *Every night*: new posts that mention a term go to the front of Gemma's queue, so they're read even on a busy night. Matches beyond the run's limit go first the next night.
+
+Add a YouTube Data API key in **Settings → Chat & search** to search channels through the official API (the free quota covers about 100 channel searches a day). The key is kept in your system keychain. Without one, Night Scout uses yt-dlp if it's installed (`pip install yt-dlp`).
+
 - **X (Twitter)** isn't supported. X has no free public API and its terms don't allow scraping. Many of the same people also post on Bluesky or Mastodon.
 
 # Asking Gemma

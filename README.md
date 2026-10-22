@@ -86,6 +86,12 @@ fetch ─► dedupe ─► pre-filter ─► Gemma judges ─► Gemma proposes 
    subreddit RSS, the Bluesky public AppView, Mastodon hashtag timelines, and GitHub releases
    and repo search. Requests are spaced per host and use a descriptive User-Agent. A
    source that fails is reported ("Reddit r/x: HTTP 429, skipped") and the run goes on.
+   Each feed-style source has a **look back** (1–14 days, default 3) and optional **Scout key
+   terms**: new items that mention one go to the front of Gemma's queue. When a source with
+   terms is added, its feed is checked once at any age; a YouTube channel is searched as a
+   whole (YouTube Data API with your key, or [yt-dlp](https://github.com/yt-dlp/yt-dlp) without
+   one; that's the one place Night Scout reads public web pages instead of a feed, and only
+   when you ask for it).
 2. **Dedupe** by canonical URL (tracking parameters stripped, YouTube URL forms folded)
    and by embedding similarity. Something seen on HN *and* Reddit counts as one item with
    a little extra buzz.

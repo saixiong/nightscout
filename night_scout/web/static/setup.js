@@ -491,7 +491,7 @@ function stepSources(head) {
   const body = $("#sbody");
   const groups = {}; D.src.catalog.forEach(r => (groups[r.type] ||= []).push(r));
   const t = ADD.find(x => x.k === U.addType);
-  body.innerHTML = head("What should it <em>read</em> overnight?", `${U.rerun ? "These are the sources the scout reads now." : "A starter set for local-AI and developer news is on."} Switch off what you don't want and add your own. Official feeds and public APIs only: no logins, no scraping.`) + `
+  body.innerHTML = head("What should it <em>read</em> overnight?", `${U.rerun ? "These are the sources the scout reads now." : "A starter set for local-AI and developer news is on."} Switch off what you don't want and add your own. Official feeds and public APIs, no logins. On the Sources page you can also set how far back each one reads and add key terms.`) + `
     <div class="src-compact">${Object.entries(groups).map(([ty, list]) => `<div class="group"><div class="group-h">${badge(ty, 1)}<h4>${esc(TYPE[ty] || ty)}</h4><span class="muted">${list.filter(r => r.enabled !== false).length} of ${list.length} on</span></div>
       ${list.map(r => `<div class="feed ${r.enabled === false ? "off" : ""}"><div><div>${esc(r.label)}</div><div class="what">${esc(r.detail)}</div></div>
         <button class="toggle ${r.enabled === false ? "" : "on"}" data-k="${esc(r.key)}" title="${r.enabled === false ? "Off" : "On"}"></button></div>`).join("")}</div>`).join("")}</div>

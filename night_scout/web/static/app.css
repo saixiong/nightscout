@@ -814,3 +814,34 @@ body.chat-on #askNav .scout-ic.nav { box-shadow: 0 0 0 2px #1b1305; }
   .madeby { display: none; }
   .lightbox { padding: 12px; }
 }
+
+/* Sources: Look back + Scout key terms ----------------------------------- */
+.feed:has(> .btn.sm) { grid-template-columns: 1fr auto auto auto; }
+.scoutchips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
+.chip { font-size: 11px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--edge-hi); color: var(--soft); background: rgba(122, 162, 255, .06); white-space: nowrap; }
+.chip.term { border-color: rgba(255, 181, 71, .4); color: var(--amber); background: rgba(255, 181, 71, .07); }
+.feededit { margin: -2px 0 10px; padding: 12px 14px; border: 1px solid var(--edge-hi); border-top: 0; border-radius: 0 0 10px 10px; background: rgba(122, 162, 255, .04); }
+.feededit .row { margin-top: 10px; }
+.scoutopts { display: grid; grid-template-columns: 210px 1fr; gap: 16px; margin-top: 12px; padding: 12px 14px; border: 1px dashed var(--edge-hi); border-radius: 10px; }
+.sopt { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.sopt small { line-height: 1.45; font-size: 11.5px; }
+.slabel { font-weight: 650; font-size: 13px; }
+.slabel small { font-weight: 400; margin-left: 4px; }
+.stepper { display: inline-flex; align-items: center; gap: 8px; align-self: flex-start; padding: 3px; border: 1px solid var(--edge-hi); border-radius: 9px; font-size: 13px; color: var(--soft); }
+.stepper button { width: 28px; height: 28px; border-radius: 7px; border: 0; background: rgba(122, 162, 255, .12); color: var(--text); font-size: 16px; cursor: pointer; }
+.stepper button:disabled { opacity: .3; cursor: default; }
+.stepper .lbval { font-size: 16px; min-width: 18px; text-align: center; color: var(--amber); }
+.sopt input { width: 100%; }
+.sopt .via { font-size: 11.5px; }
+.scoutres { position: relative; margin-top: 14px; padding: 14px 16px; border: 1px solid rgba(70, 211, 154, .35); border-radius: 12px; background: rgba(70, 211, 154, .05); animation: srIn .5s var(--spring); }
+@keyframes srIn { from { opacity: 0; transform: translateY(8px) scale(.98); } }
+.scoutres .x { position: absolute; top: 8px; right: 10px; background: none; border: 0; color: var(--muted); cursor: pointer; font-size: 14px; }
+.sr-h { margin: 0 0 8px; font-size: 13.5px; }
+.sr-h b { color: var(--good); }
+.sr-term { display: flex; gap: 10px; align-items: baseline; font-size: 13px; padding: 2px 0; }
+.sr-term b { color: var(--amber); min-width: 90px; }
+.sr-list { margin-top: 8px; border-top: 1px solid var(--edge); }
+.sr-item { display: grid; grid-template-columns: 78px 1fr auto; gap: 10px; align-items: center; padding: 6px 2px; border-bottom: 1px solid var(--edge); color: var(--text); font-size: 13px; }
+.sr-item:hover { background: rgba(122, 162, 255, .06); }
+.sr-tags { display: flex; gap: 4px; }
+@media (max-width: 760px) { .scoutopts { grid-template-columns: 1fr; } .sr-item { grid-template-columns: 1fr; gap: 2px; } }

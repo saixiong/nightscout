@@ -48,6 +48,15 @@ class RunResult:
     stats: dict[str, int] = field(default_factory=dict)
 
 
+def scout_first(ranked: list[Any], pending: list[sqlite3.Row]) -> tuple[list[Any], int]:
+    """Scout key terms: items that mention a source's terms go to the front of the queue,
+    keeping the pre-filter's order within each group. Returns (ranked, how many matched)."""
+    scouted = {r["id"] for r in pending if json.loads(r["extra"] or "{}").get("scout_terms")}
+    if not scouted:
+        return ranked, 0
+    return sorted(ranked, key=lambda c: c.item_id not in scouted), len(scouted)
+
+
 def run_once(
     cfg: Config,
     fetch_only: bool = False,
@@ -231,6 +240,9 @@ def _judge_and_digest(
     progress("dedupe", len(pending), len(pending))
     progress("prefilter", 0, len(pending))
     ranked = rank_candidates(pending, profile, weights, item_vecs, query_vecs)
+    ranked, scouted = scout_first(ranked, pending)
+    if scouted:
+        result.stats["scouted"] = scouted
     chosen = ranked[: cfg.thresholds.max_scored]
     chosen_ids = {c.item_id for c in chosen}
     for c in ranked:

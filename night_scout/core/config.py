@@ -216,6 +216,56 @@ class GitHubSource(BaseModel):
     token_env: str = "GITHUB_TOKEN"
 
 
+MAX_SCOUT_TERMS = 10
+MAX_TERM_LEN = 60
+LOOK_BACK_MAX = 14
+
+
+def clean_scout_terms(raw: object) -> list[str]:
+    """Key terms from a list or a comma-separated string: trimmed, de-duplicated (any case),
+    at most MAX_SCOUT_TERMS. Raises ValueError with a message fit to show the user."""
+    if raw is None:
+        return []
+    parts = raw.split(",") if isinstance(raw, str) else list(raw)  # type: ignore[call-overload]
+    out: list[str] = []
+    seen: set[str] = set()
+    for p in parts:
+        if not isinstance(p, str):
+            raise ValueError("Key terms must be text.")
+        t = " ".join(p.split())
+        if not t:
+            continue
+        if len(t) > MAX_TERM_LEN:
+            raise ValueError(f"A key term can be at most {MAX_TERM_LEN} characters.")
+        if any(ord(ch) < 32 for ch in t):
+            raise ValueError("Key terms can't contain control characters.")
+        if t.casefold() not in seen:
+            seen.add(t.casefold())
+            out.append(t)
+    if len(out) > MAX_SCOUT_TERMS:
+        raise ValueError(f"Use at most {MAX_SCOUT_TERMS} key terms per source.")
+    return out
+
+
+class ScoutSettings(BaseModel):
+    """Per-source settings, keyed in `Sources.scout` by the source's task key
+    (youtube:<channel id>, rss:<feed url>, reddit:<subreddit>)."""
+
+    # How many days back the first fetch reads (and how far a run catches up). None = default.
+    look_back_days: int | None = Field(default=None, ge=1, le=LOOK_BACK_MAX)
+    # New items that mention a term (whole word, any case) go first in Gemma's queue.
+    terms: list[str] = Field(default_factory=list)
+
+    @field_validator("terms", mode="before")
+    @classmethod
+    def _terms(cls, v: object) -> list[str]:
+        return clean_scout_terms(v)
+
+
+# Source types that take ScoutSettings (feed-style sources; searches have their own keywords).
+SCOUTABLE_TYPES = ("youtube", "rss", "reddit")
+
+
 class Sources(BaseModel):
     youtube: list[YouTubeSource] = Field(default_factory=list)
     rss: list[RssSource] = Field(default_factory=list)
@@ -226,6 +276,11 @@ class Sources(BaseModel):
     github: GitHubSource | None = None
     # SourceTask keys (see `night-scout sources` / the Sources page) that are switched off.
     disabled: list[str] = Field(default_factory=list)
+    # Look back + Scout key terms per source, keyed like `disabled`.
+    scout: dict[str, ScoutSettings] = Field(default_factory=dict)
+
+    def scout_for(self, key: str) -> ScoutSettings | None:
+        return self.scout.get(key)
 
 
 class Schedule(BaseModel):

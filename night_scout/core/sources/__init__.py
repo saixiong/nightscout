@@ -52,6 +52,10 @@ def source_catalog(cfg: Config) -> list[dict[str, Any]]:
         }
         if t.key in rss_kind:
             row["kind"] = rss_kind[t.key]
+        sc = cfg.sources.scout.get(t.key)
+        if sc:
+            row["look_back_days"] = sc.look_back_days
+            row["scout_terms"] = list(sc.terms)
         out.append(row)
     return out
 

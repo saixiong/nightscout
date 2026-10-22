@@ -24,6 +24,7 @@ from .config import (
     RedditSource,
     RssKind,
     RssSource,
+    Sources,
     YouTubeSource,
 )
 from .http import PoliteClient, SourceError
@@ -399,6 +400,30 @@ def _add_github(cfg: Config, value: str) -> None:
     cfg.sources.github = gh
 
 
+class AlreadyFollowing(ValueError):
+    """The source resolves to one that's already configured (its task `key` and `label`)."""
+
+    def __init__(self, key: str | None, label: str | None, message: str | None = None) -> None:
+        super().__init__(message or "That source is already in the list.")
+        self.key = key
+        self.label = label
+
+
+def _adders(work: Config, value: str, http: PoliteClient) -> dict[str, Callable[[], None]]:
+    return {
+        "website": lambda: _add_rss(work, "website", value, http),
+        "newsletter": lambda: _add_rss(work, "newsletter", value, http),
+        "podcast": lambda: _add_rss(work, "podcast", value, http, direct=True),
+        "arxiv": lambda: _add_arxiv(work, value),
+        "youtube": lambda: _add_youtube(work, value, http),
+        "reddit": lambda: _add_reddit(work, value),
+        "hackernews": lambda: _add_hackernews(work, value),
+        "bluesky": lambda: _add_bluesky(work, value),
+        "mastodon": lambda: _add_mastodon(work, value),
+        "github": lambda: _add_github(work, value),
+    }
+
+
 def add_source(cfg: Config, type: str, value: str, client: PoliteClient | None = None) -> str:
     """Validate `value` for source `type`, add it to `cfg` (the caller saves config.yaml)
     and return the new source's label as the Sources page shows it.
@@ -407,8 +432,15 @@ def add_source(cfg: Config, type: str, value: str, client: PoliteClient | None =
     (or a page that links it). arxiv: a category like cs.CL. youtube: @handle or channel
     URL. reddit: a subreddit. hackernews: a keyword. bluesky: @handle or a search.
     mastodon: #tag (mastodon.social) or tag@server. github: owner/repo, else a repo search.
-    Raises ValueError with a message fit to show the user.
+    Raises ValueError with a message fit to show the user (AlreadyFollowing for a duplicate).
     """
+    return add_source_keyed(cfg, type, value, client)[1]
+
+
+def add_source_keyed(
+    cfg: Config, type: str, value: str, client: PoliteClient | None = None
+) -> tuple[str, str]:
+    """`add_source`, returning (task key, label) of the new source."""
     if type == "x":
         raise ValueError(
             "X has no free public API and its terms don't allow scraping, so Night Scout "
@@ -425,26 +457,31 @@ def add_source(cfg: Config, type: str, value: str, client: PoliteClient | None =
     work = cfg.model_copy(deep=True)
     own_client = client is None
     http = client or PoliteClient(contact=cfg.contact)
-    adders: dict[str, Callable[[], None]] = {
-        "website": lambda: _add_rss(work, "website", value, http),
-        "newsletter": lambda: _add_rss(work, "newsletter", value, http),
-        "podcast": lambda: _add_rss(work, "podcast", value, http, direct=True),
-        "arxiv": lambda: _add_arxiv(work, value),
-        "youtube": lambda: _add_youtube(work, value, http),
-        "reddit": lambda: _add_reddit(work, value),
-        "hackernews": lambda: _add_hackernews(work, value),
-        "bluesky": lambda: _add_bluesky(work, value),
-        "mastodon": lambda: _add_mastodon(work, value),
-        "github": lambda: _add_github(work, value),
-    }
+
+    def existing() -> tuple[str | None, str | None]:
+        """Which configured source `value` is: resolve it against an empty source list."""
+        probe = cfg.model_copy(deep=True)
+        probe.sources = Sources()
+        try:
+            _adders(probe, value, http)[type]()
+        except (ValueError, SourceError):
+            return None, None
+        found = configured_tasks(probe)
+        return (found[0].key, found[0].label) if found and found[0].key in before else (None, None)
+
     try:
-        adders[type]()
+        try:
+            _adders(work, value, http)[type]()
+        except ValueError as e:
+            if str(e).startswith("Already following"):  # the adders' own duplicate check
+                raise AlreadyFollowing(*existing(), message=str(e)) from e
+            raise
+        new = [t for t in configured_tasks(work) if t.key not in before]
+        if not new:
+            raise AlreadyFollowing(*existing())
     finally:
         if own_client:
             http.close()
-    new = [t for t in configured_tasks(work) if t.key not in before]
-    if not new:
-        raise ValueError("That source is already in the list.")
     work.sources.disabled = [k for k in work.sources.disabled if k not in {t.key for t in new}]
     cfg.sources = work.sources
-    return new[0].label
+    return new[0].key, new[0].label
