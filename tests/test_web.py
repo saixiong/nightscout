@@ -437,6 +437,31 @@ def test_not_yet_endpoints_return_501(env, method: str, route: str) -> None:
     assert r.status_code == 501 and r.json() == {"error": "not available yet"}
 
 
+def test_concurrent_reads_do_not_share_cursors(env) -> None:
+    import threading
+
+    client, *_ = env
+    store = client.app.state.store
+    bad: list[object] = []
+
+    def work() -> None:
+        try:
+            for _ in range(300):
+                run = store.last_run()
+                if run is None or run["status"] != "done":
+                    bad.append(run)
+                store.source_statuses(run["id"])
+        except Exception as e:  # sqlite3 "API misuse" when cursors interleave
+            bad.append(e)
+
+    threads = [threading.Thread(target=work) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert bad == []
+
+
 def test_interrupted_try_its_marked_failed(tmp_path: Path) -> None:
     cfg = Config(data_dir=str(tmp_path))
     store = Store(cfg.db_file())

@@ -165,6 +165,43 @@ def _pid_alive(pid: int) -> bool | None:
     return True
 
 
+class _Rows:
+    """A statement's rows, fetched while the lock was held."""
+
+    def __init__(self, rows: list[Any], rowcount: int, lastrowid: int | None) -> None:
+        self._rows = rows
+        self.rowcount = rowcount
+        self.lastrowid = lastrowid
+
+    def fetchone(self) -> Any:
+        return self._rows[0] if self._rows else None
+
+    def fetchall(self) -> list[Any]:
+        return self._rows
+
+    def __iter__(self) -> Any:
+        return iter(self._rows)
+
+
+class _SerializedConnection:
+    """The server shares one sqlite connection between request threads and background
+    jobs. sqlite3 doesn't serialize cursors, so two requests reading at once can get each
+    other's rows (or "API misuse" errors); the single page fires several requests at once.
+    Run each statement and fetch its rows under the store's (reentrant) lock."""
+
+    def __init__(self, conn: sqlite3.Connection, lock: Any) -> None:
+        self._conn = conn
+        self._lock = lock
+
+    def execute(self, sql: str, params: Any = ()) -> _Rows:
+        with self._lock:
+            cur = self._conn.execute(sql, params)
+            return _Rows(cur.fetchall(), cur.rowcount, cur.lastrowid)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._conn, name)
+
+
 def create_app(
     cfg: Config,
     config_path: Path,
@@ -173,6 +210,7 @@ def create_app(
     extra_hosts: tuple[str, ...] = (),
 ) -> FastAPI:
     store = Store(cfg.db_file())
+    store.conn = _SerializedConnection(store.conn, store._lock)  # type: ignore[assignment]
     interrupted = store.fail_interrupted_actions()
     if interrupted:
         log.warning("marked %d interrupted Try-it run(s) as failed", interrupted)
@@ -192,6 +230,7 @@ def create_app(
     state: dict[str, Any] = {"cfg": cfg}
     allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}", *extra_hosts}
     app.state.session_key = session_key
+    app.state.store = store
     app.state.csrf = csrf
     app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
 
