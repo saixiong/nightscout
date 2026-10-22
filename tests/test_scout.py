@@ -184,6 +184,7 @@ def test_youtube_api_error_is_scrubbed() -> None:
     with pytest.raises(ScoutError) as e:
         search_youtube_channel(CHANNEL, "x", ["kling"], client, api_key="AIzaSECRETKEY0123456789")
     assert "AIzaSECRET" not in str(e.value)
+    assert "rejected the API key" in str(e.value) and "Settings" in str(e.value)
 
 
 # -- feeds ----------------------------------------------------------------------------------
