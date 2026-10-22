@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import timedelta
 
 from .config import Config
@@ -20,15 +21,21 @@ def fetch_all(
     run_id: int,
     client: PoliteClient | None = None,
     tasks: list[SourceTask] | None = None,
+    progress: Callable[[int, int], None] | None = None,
 ) -> list[SourceStatus]:
-    """Fetch each source independently. One failing source never stops the others."""
+    """Fetch each source independently. One failing source never stops the others.
+
+    `progress(done, total)` is called before the first source and after each one.
+    """
     tasks = all_tasks(cfg) if tasks is None else tasks
     own_client = client is None
     client = client or PoliteClient(contact=cfg.contact)
     cutoff = utcnow() - timedelta(days=cfg.thresholds.max_age_days)
     statuses: list[SourceStatus] = []
     try:
-        for task in tasks:
+        if progress:
+            progress(0, len(tasks))
+        for n, task in enumerate(tasks, 1):
             try:
                 items = task.fetch(client)
             except SourceError as e:
@@ -50,6 +57,8 @@ def fetch_all(
             store.record_source_status(run_id, st)
             statuses.append(st)
             log.info(st.line())
+            if progress:
+                progress(n, len(tasks))
     finally:
         if own_client:
             client.close()

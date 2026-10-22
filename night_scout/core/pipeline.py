@@ -1,4 +1,7 @@
-"""The nightly run: fetch → dedupe → pre-filter → Gemma scoring → action proposals → digest.
+"""The nightly run: fetch → dedupe → pre-filter → Gemma scoring → action proposals → digest
+→ new-project ideas.
+
+Each stage reports live progress to runs.stats.progress (store.set_run_progress).
 
 Nothing here executes an action. The run only proposes; the user decides in the UI.
 """
@@ -7,7 +10,9 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from datetime import time as dtime
@@ -18,14 +23,15 @@ from .config import Config
 from .db import Store
 from .dedupe import near_duplicate_groups
 from .digest import rank_for_digest, write_digest
-from .feedback import compute_weights
+from .feedback import Weights, compute_weights
 from .fetch import fetch_all
-from .judge import judge_item, propose_actions
+from .ideas import propose_ideas
+from .judge import Judged, judge_item, propose_actions
 from .llm import LLM, ModelError, ModelUnavailable, OllamaClient
 from .lock import RunLock
 from .models import utcnow
 from .prefilter import doc_text, query_texts, rank_candidates
-from .profile import load_profile
+from .profile import Profile, load_profile
 from .sources.youtube import fetch_transcript
 
 log = logging.getLogger(__name__)
@@ -74,7 +80,12 @@ def _run_locked(
     run_id = store.start_run()
     result = RunResult(run_id=run_id, ok=True)
     try:
-        statuses = fetch_all(cfg, store, run_id)
+        statuses = fetch_all(
+            cfg,
+            store,
+            run_id,
+            progress=lambda done, total: store.set_run_progress(run_id, "fetch", done, total),
+        )
         result.status_lines = [s.line() for s in statuses]
         result.stats["new"] = sum(s.new for s in statuses)
         result.stats["sources_failed"] = sum(1 for s in statuses if not s.ok)
@@ -143,6 +154,12 @@ def _judge_and_digest(
         result.ok = False
         return
 
+    def progress(stage: str, done: int, total: int) -> None:
+        try:
+            store.set_run_progress(run_id, stage, done, total)
+        except Exception:  # progress is cosmetic; never let it sink the run
+            log.exception("progress update failed")
+
     weights = compute_weights(store)
     cutoff = (utcnow() - timedelta(days=cfg.thresholds.max_age_days)).isoformat()
     # A run that was killed or lost the model mid-way leaves candidates behind; retry them.
@@ -152,6 +169,7 @@ def _judge_and_digest(
     pending = [r for r in store.items_with_status("new") if r["first_seen"] >= cutoff]
 
     # Embeddings: near-duplicate detection and semantic pre-filter. Optional.
+    progress("dedupe", 0, len(pending))
     item_vecs: dict[int, list[float]] | None = None
     query_vecs: list[list[float]] | None = None
     if pending and llm.has_embed_model():
@@ -196,6 +214,8 @@ def _judge_and_digest(
         # re-read so also_seen changes count toward the buzz boost
         pending = [r for r in (store.item(r["id"]) for r in pending) if r is not None]
 
+    progress("dedupe", len(pending), len(pending))
+    progress("prefilter", 0, len(pending))
     ranked = rank_candidates(pending, profile, weights, item_vecs, query_vecs)
     chosen = ranked[: cfg.thresholds.max_scored]
     chosen_ids = {c.item_id for c in chosen}
@@ -206,12 +226,17 @@ def _judge_and_digest(
             status="candidate" if c.item_id in chosen_ids else "filtered",
         )
     result.stats["candidates"] = len(chosen)
+    progress("prefilter", len(pending), len(pending))
 
     scored = failed = with_actions = 0
     lost_model: str | None = None
     streak: list[int] = []  # consecutive judge failures; a hung model looks like this
     t0 = time.monotonic()
+    worth_actions: list[tuple[sqlite3.Row, Judged, str | None]] = []
+    progress("judge", 0, len(chosen))
     for i, cand in enumerate(chosen, 1):
+        if i > 1:
+            progress("judge", i - 1, len(chosen))
         row = store.item(cand.item_id)
         if row is None:
             continue
@@ -246,7 +271,14 @@ def _judge_and_digest(
             continue
         streak.clear()
         store.save_score(
-            row["id"], llm.model_name, judged.summary, judged.per_project, judged.topics
+            row["id"],
+            llm.model_name,
+            judged.summary,
+            judged.per_project,
+            judged.topics,
+            impact=judged.impact,
+            matched=judged.matched,
+            next_step=judged.next_step,
         )
         store.update_extra(row["id"], kind=judged.kind)
         scored += 1
@@ -261,21 +293,33 @@ def _judge_and_digest(
             row["title"][:80],
         )
         if relevance >= cfg.thresholds.relevance:
-            try:
-                actions = propose_actions(llm, profile, row, judged, transcript)
-            except ModelUnavailable as e:
-                lost_model = str(e)
-                store.update_extra(row["id"], actions_error=f"model unavailable: {str(e)[:200]}")
-                break
-            except ModelError as e:
-                log.warning("actions failed for item %s: %s", row["id"], e)
-                store.update_extra(row["id"], actions_error=str(e)[:300])
-                continue
+            worth_actions.append((row, judged, transcript))
+    if lost_model is None:
+        progress("judge", len(chosen), len(chosen))
+
+    # Next steps for the items that cleared the bar, once judging is done.
+    if lost_model is None:
+        progress("actions", 0, len(worth_actions))
+    for n, (row, judged, transcript) in enumerate(worth_actions, 1):
+        if lost_model is not None:
+            store.update_extra(row["id"], actions_error="model unavailable")
+            continue
+        try:
+            actions = propose_actions(llm, profile, row, judged, transcript)
+        except ModelUnavailable as e:
+            lost_model = str(e)
+            store.update_extra(row["id"], actions_error=f"model unavailable: {str(e)[:200]}")
+            continue
+        except ModelError as e:
+            log.warning("actions failed for item %s: %s", row["id"], e)
+            store.update_extra(row["id"], actions_error=str(e)[:300])
+        else:
             for a in actions:
                 aid = store.add_action(row["id"], a.type, a.project, a.title, a.detail)
                 if a.status != "proposed":
                     store.set_action(aid, a.status)
             with_actions += 1
+        progress("actions", n, len(worth_actions))
     elapsed = time.monotonic() - t0
     result.stats.update(scored=scored, judge_failed=failed, with_actions=with_actions)
     model_msg = f"scored {scored}/{len(chosen)} in {elapsed / 60:.1f} min"
@@ -310,8 +354,10 @@ def _judge_and_digest(
     run_row = store.conn.execute("SELECT started_at FROM runs WHERE id=?", (run_id,)).fetchone()
     day_start = min(midnight, run_row["started_at"])
     weights = compute_weights(store)
+    progress("digest", 0, 1)
+    scored_today = store.scored_since(day_start)
     picks = rank_for_digest(
-        store.scored_since(day_start),
+        scored_today,
         weights,
         cfg.thresholds.relevance,
         cfg.thresholds.digest_size,
@@ -327,3 +373,60 @@ def _judge_and_digest(
         llm.model_name,
     )
     result.stats["digest_items"] = len(picks)
+    progress("digest", 1, 1)
+
+    if cfg.thresholds.ideas > 0 and lost_model is None:
+        _ideas(cfg, store, llm, profile, run_id, result, day, scored_today, weights, progress)
+
+
+def _ideas(
+    cfg: Config,
+    store: Store,
+    llm: LLM,
+    profile: Profile,
+    run_id: int,
+    result: RunResult,
+    day: date,
+    scored_today: list[sqlite3.Row],
+    weights: Weights,
+    progress: Callable[[str, int, int], None],
+) -> None:
+    """New side-project ideas from today's best items. A failure here never fails the run."""
+    n = cfg.thresholds.ideas
+    progress("ideas", 0, n)
+    rows = [
+        r
+        for r in scored_today
+        if r["id"] not in weights.ignored_items and not weights.muted(r["source_name"])
+    ]
+    if not rows:
+        _status(store, run_id, result, "pipeline:ideas", "Ideas", True, "no items to draw on")
+        progress("ideas", n, n)
+        return
+    try:
+        ideas = propose_ideas(llm, profile, rows, n, avoid=store.recent_idea_titles())
+        store.save_ideas(run_id, day.isoformat(), ideas)
+    except Exception as e:  # ModelError, or anything else: ideas are a bonus
+        log.warning("ideas failed: %s", e, exc_info=not isinstance(e, ModelError))
+        _status(
+            store,
+            run_id,
+            result,
+            "pipeline:ideas",
+            "Ideas",
+            False,
+            f"failed ({type(e).__name__}: {str(e)[:120]})",
+        )
+        return
+    finally:
+        progress("ideas", n, n)
+    result.stats["ideas"] = len(ideas)
+    _status(
+        store,
+        run_id,
+        result,
+        "pipeline:ideas",
+        "Ideas",
+        True,
+        f"{len(ideas)} new project idea{'s' if len(ideas) != 1 else ''}",
+    )

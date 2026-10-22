@@ -31,6 +31,8 @@ class Thresholds(BaseModel):
     max_age_days: int = Field(default=3, ge=1)
     # Cosine similarity at or above which two items count as the same story.
     near_duplicate: float = Field(default=0.92, ge=0.5, le=1.0)
+    # New side-project ideas proposed after each run's digest (0 turns them off).
+    ideas: int = Field(default=2, ge=0, le=5)
 
 
 class ProjectRef(BaseModel):
@@ -47,9 +49,14 @@ class YouTubeSource(BaseModel):
     transcripts: bool = True
 
 
+RssKind = Literal["feed", "website", "newsletter", "podcast", "arxiv"]
+
+
 class RssSource(BaseModel):
     name: str
     url: str
+    # Only for display: how the feed was added. Every kind is fetched the same way.
+    kind: RssKind = "feed"
 
 
 HNList = Literal["top", "new", "best", "show", "ask"]
@@ -106,6 +113,8 @@ class Sources(BaseModel):
     bluesky: BlueskySource | None = None
     mastodon: list[MastodonSource] = Field(default_factory=list)
     github: GitHubSource | None = None
+    # SourceTask keys (see `night-scout sources` / the Sources page) that are switched off.
+    disabled: list[str] = Field(default_factory=list)
 
 
 class Schedule(BaseModel):
