@@ -1010,6 +1010,8 @@ async function boot() {
 }
 
 Object.assign(NS, { $, $$, esc, md, toast, go, badge, wireTilt, chrome, card, kindPill, words, fx, api, failToast, ext, isWeb, reset, loading, errorView,
-  get B() { return B; }, get M() { return M; }, get S() { return S; }, visibleCards, loadMorning, route });
+  S, visibleCards, loadMorning, route });
+/* live views of the loaded data (Object.assign would copy today's value, not a getter) */
+Object.defineProperties(NS, { B: { get: () => B }, M: { get: () => M } });
 window.addEventListener("DOMContentLoaded", boot);
 })();
