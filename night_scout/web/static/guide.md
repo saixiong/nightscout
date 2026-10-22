@@ -7,7 +7,7 @@ Every night it fetches new items from your sources. Gemma files each one under o
 - **Digest** (opens first): the night's best stories for your topics, with a summary, key points and, for videos, the player right in the card. No projects needed.
 - **Actions** (with projects): a handful of picks, each tied to one of your projects and labelled with what it means for that project.
 
-Everything runs on your own machine with an open model (Gemma 4 by default). Nothing is sent anywhere unless you add a cloud provider yourself.
+Everything runs on your own machine with an open model (Gemma 4 by default). Nothing is sent anywhere unless you add a cloud provider yourself and pick it for a role.
 
 # Your first night
 
@@ -93,11 +93,13 @@ Pages are fetched from your machine, only from public addresses, and only when G
 
 # Models and providers
 
-By default everything runs on **Ollama** on your machine: Gemma 4 12B judges items and writes briefs, Gemma 4 E4B is the fallback, and EmbeddingGemma finds near-duplicates. Settings → Providers shows each model role and which model fills it.
+By default everything runs on **Ollama** on your machine: Gemma 4 12B judges items and writes briefs, Gemma 4 E4B is the fallback, and EmbeddingGemma finds near-duplicates. The chat uses the Judge model. **Settings → AI Providers** shows each model role (Judge, Chat, Fallback, Embeddings) and which model fills it.
 
-You can also connect LM Studio or any OpenAI-compatible server (llama.cpp, vLLM, Jan, LocalAI), or a cloud provider that speaks the same API: OpenAI or OpenRouter. Native Anthropic and Google Gemini support comes next. Cloud providers are off by default. If you pick one for a role, item text and your project profiles are sent to that provider, and the app marks that role "leaves this machine".
+You can also connect LM Studio or any OpenAI-compatible server (llama.cpp, vLLM, Jan, LocalAI), or a cloud provider: **Anthropic** (its own API), **Google Gemini** (through Google's OpenAI-compatible endpoint), **OpenAI**, **OpenRouter**, and under "+ more" DeepSeek, Groq, Mistral and xAI. Add a key, then open **Models ▾** to see the provider's models, listed live, and tick the ones to offer for roles. A custom server can be edited or removed later; it's only saved after its connection test passes.
 
-API keys are stored in your operating system's keychain (macOS Keychain, Windows Credential Manager or the Linux Secret Service). They are never written to `config.yaml`, the database or the logs, and the app only ever shows the first and last four characters. An environment variable such as `ANTHROPIC_API_KEY` overrides a stored key.
+Cloud providers are off by default and are used only for the roles you pick. If you pick one, the app marks that role "Leaves this machine": for the Judge and Fallback, item text and your project profiles go to that provider; for the Chat, your questions, their context and the research tools' results do. Cloud calls bill to your account with that provider. Embeddings always stay on your machine. Removing a provider or its key puts its roles back on Gemma.
+
+API keys are stored in your operating system's keychain (macOS Keychain, Windows Credential Manager or the Linux Secret Service). They are never written to `config.yaml`, the database or the logs, and the app only ever shows the first and last four characters. An environment variable such as `ANTHROPIC_API_KEY`, `GEMINI_API_KEY` or `OPENAI_API_KEY` overrides a stored key.
 
 # Troubleshooting
 

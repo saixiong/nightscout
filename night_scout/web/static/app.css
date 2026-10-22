@@ -827,3 +827,4 @@ body.chat-on #askNav .scout-ic.nav { box-shadow: 0 0 0 2px #1b1305; }
 .morecloud { margin: 2px 0 14px; font-size: 12.5px; }
 .cm-row { display: flex; gap: 8px; }
 .cm-row input { flex: 1; }
+.prov .keypill { white-space: nowrap; }

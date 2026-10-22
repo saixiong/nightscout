@@ -29,10 +29,12 @@ those projects**. In the morning you get two pages:
   Improvement or Relevant), shows the profile entry it matched and why, and comes with a
   next step plus one to three concrete actions. Gemma also suggests two small new project
   ideas each night.
-- **Your models.** Ollama by default; LM Studio, any OpenAI-compatible server, OpenAI or
-  OpenRouter if you want (Settings → AI Providers). API keys live in the OS keychain.
+- **Your models.** Ollama by default; LM Studio, any OpenAI-compatible server, or a cloud
+  provider (Anthropic, Google Gemini, OpenAI, OpenRouter, DeepSeek, Groq, Mistral, xAI) for
+  the roles you pick (Settings → AI Providers). API keys live in the OS keychain.
 - **Local and free.** Open weights on your own machine: your project context never leaves
-  the laptop, each run costs $0, and it can run every night forever.
+  the laptop, each run costs $0 unless you pick a cloud model for a role, and it can run
+  every night forever.
 - **Nothing runs on its own.** The nightly run only proposes. Try-it plans run in a
   throwaway sandbox, and only after you read the exact commands and confirm.
 
@@ -140,7 +142,16 @@ doesn't make a package trustworthy.
 
 Your profile, the database, digests and votes live in `~/.night-scout/` (or
 `$NIGHT_SCOUT_HOME`). The only network traffic is the fetches to public sources (and, if you
-click Research more, to that item's page). Model calls go to Ollama on localhost.
+click Research more, to that item's page). Model calls go to Ollama on localhost unless you
+pick a cloud model for a role.
+
+Cloud providers are optional and used only for the roles you give them (Settings → AI
+Providers marks those roles "Leaves this machine"; calls bill to your account with that
+provider). Embeddings always stay local. API keys live only in the OS keychain (macOS
+Keychain, Windows Credential Manager, Linux Secret Service), never in `config.yaml`, the
+database, the logs or the Try-it sandbox; the app shows them only as the first and last four
+characters, and an environment variable such as `ANTHROPIC_API_KEY` or `GEMINI_API_KEY`
+overrides a stored key.
 
 ## Ask Gemma (the chat drawer)
 
@@ -156,8 +167,10 @@ It doesn't guess from memory: it calls research tools and shows each call as it 
 | Hacker News | Stories, points and comment counts from HN search |
 | Web search | Optional: your SearXNG instance or the Brave Search API |
 
-The chat uses the `chat` model role, which follows the Judge model unless you set
-`roles.chat` in `config.yaml`. Conversations are kept in `scout.db`.
+The chat uses the `chat` model role, which follows the Judge model unless you pick another
+in Settings → AI Providers → Model roles → Chat (or set `roles.chat` in `config.yaml`). With a
+cloud chat model, your questions, their context and the tools' results go to that provider.
+Conversations are kept in `scout.db`.
 
 Safety: text from pages, transcripts and search results is data, never instructions (the
 prompt says so, and tool output is passed back as tool results). One answer gets at most
