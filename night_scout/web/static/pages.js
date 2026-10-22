@@ -100,7 +100,7 @@ const ROLES = [
   ["fallback", "Fallback judge", "Used if the main model fails or times out."],
   ["embed", "Embeddings", "Finds near-duplicates and pre-filters items. Local only."],
 ];
-const NAV = [["providers", "🔌", "AI Providers", "Models and API keys"], ["schedule", "🌙", "Schedule", "When the scout runs"], ["sandbox", "🧪", "Try-it sandbox", "Safety limits"], ["privacy", "🔒", "Data & privacy", "What's stored where"], ["about", "ⓘ", "About", "Version and licence"]];
+const NAV = [["setup", "✨", "Setup", "Walk through it all again"], ["providers", "🔌", "AI Providers", "Models and API keys"], ["schedule", "🌙", "Schedule", "When the scout runs"], ["sandbox", "🧪", "Try-it sandbox", "Safety limits"], ["privacy", "🔒", "Data & privacy", "What's stored where"], ["about", "ⓘ", "About", "Version and licence"]];
 const keychain = () => ({ darwin: "macOS Keychain", win32: "Windows Credential Manager" }[B().platform] || "system keychain");
 
 /* What the page shows until GET /api/providers answers: Ollama with the models from config.yaml. */
@@ -133,7 +133,7 @@ NS.pages.settings = (sec = "providers") => {
     <div class="col-left">
       <section class="hero"><p class="eyebrow">Settings</p><h1>Your models,<br><em>your</em> machine.</h1>
         <p class="sub">Night Scout runs on local models by default. Nothing here is required for it to work.</p></section>
-      <div class="snav">${NAV.map(([k, ic, l, d]) => `<a href="#/settings/${k}" class="${k === sec ? "on" : ""}"><span class="ic">${ic}</span><span><b>${l}</b><small>${d}</small></span></a>`).join("")}</div>
+      <div class="snav">${NAV.map(([k, ic, l, d]) => `<a href="${k === "setup" ? "#/setup" : `#/settings/${k}`}" class="${k === sec ? "on" : ""}"><span class="ic">${ic}</span><span><b>${l}</b><small>${d}</small></span></a>`).join("")}</div>
     </div>
     <div class="stage"><div class="big enter"><div class="big-scroll" id="setPane"></div></div></div>
   </div>`;
@@ -147,7 +147,7 @@ function renderOther(sec) {
   const b = B(), sb = b.sandbox, title = NAV.find(n => n[0] === sec)?.[2] || sec;
   const rows = {
     schedule: [["Runs every night at", b.schedule.time], ["Installed", b.schedule.installed === null ? "unknown on this platform" : b.schedule.installed ? `yes (${b.schedule.via})` : "no"],
-      ["Install", "night-scout schedule --install"], ["Remove", "night-scout schedule --uninstall"]],
+      ["Change it", "Settings → Setup → Schedule, or night-scout setup"], ["Install", "night-scout schedule --install"], ["Remove", "night-scout schedule --uninstall"]],
     sandbox: [["Sandbox here", sb.error ? `unavailable: ${sb.error}` : sb.mode === "container" ? `container (${sb.engine})` : sb.is_mac ? "venv + macOS sandbox" : "venv"],
       ["Prefer", sb.prefer], ["Time limit", `${sb.timeout_s} seconds`], ["Container image", sb.container_image]],
     privacy: [["Data folder", b.data_dir], ["Stored there", "scout.db (items, scores, votes), digests/, profile.yaml"], ["Notes", `written only under ${b.notes_subdir}/ inside a project, when you click Save`],

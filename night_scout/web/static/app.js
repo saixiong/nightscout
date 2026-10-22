@@ -660,6 +660,10 @@ function renderMorningState(app, s) {
       <p class="summary">Run one pass now (about 15 minutes on Gemma 4 12B):</p><div class="cmdline">$ night-scout run</div>
       <p class="summary">Or let it run every night at ${esc(B.schedule.time)} while you sleep:</p><div class="cmdline">$ night-scout schedule --install</div>
       <p class="muted small">Profile: ${projects.map(esc).join(" · ")} · <a href="#/projects">review it</a></p>`
+    : B.setup?.needed ? `<h2 class="serif">Let's set it up.</h2>
+      <p class="summary">Six short steps: pick the model, add your projects, choose what it reads and when it goes out.</p>
+      <div class="row"><a class="btn primary" href="#/setup">Set up the scout ›</a></div>
+      <p class="muted small mt22">Prefer the terminal? <code>night-scout init ~/code/my-app</code>, then <code>night-scout run</code>.</p>`
     : `<h2 class="serif">Three commands.</h2>
       <p class="summary">Point the scout at your project folders and let Gemma profile them:</p><div class="cmdline">$ night-scout init ~/code/my-app</div>
       <p class="summary">Run one pass now:</p><div class="cmdline">$ night-scout run</div>
@@ -1015,11 +1019,23 @@ async function boot() {
   loading("Waking the scout…");
   const [b] = await Promise.all([loadBoot(), loadRun()]);
   if (!b.ok) return errorView(b);
+  // First launch (no projects profiled yet): open Setup instead of an empty Morning, unless
+  // this tab already chose "Skip setup for now".
+  const page = (location.hash || "#/morning").split("/")[1] || "morning";
+  if (B.setup?.needed && page === "morning" && !RUN?.running && !sessionStorage.getItem("nsSetupSkipped")) {
+    location.replace("#/setup"); // replace: Back shouldn't bounce into the empty Morning
+  }
   route();
   watchRun();
 }
 
-Object.assign(NS, { $, $$, esc, md, toast, go, badge, wireTilt, chrome, card, kindPill, words, fx, api, failToast, ext, isWeb, reset, loading, errorView,
+/* Setup's "Run now": wait for the new run to show up, then follow it on Morning. */
+async function kickRun() {
+  for (let i = 0; i < 20 && !RUN?.running; i++) { await loadRun(); if (!RUN?.running) await new Promise(r => setTimeout(r, 750)); }
+  M = null; reset(); go("#/morning"); watchRun();
+}
+
+Object.assign(NS, { loadBoot, kickRun, $, $$, esc, md, toast, go, badge, wireTilt, chrome, card, kindPill, words, fx, api, failToast, ext, isWeb, reset, loading, errorView,
   S, visibleCards, loadMorning, route });
 /* live views of the loaded data (Object.assign would copy today's value, not a getter) */
 Object.defineProperties(NS, { B: { get: () => B }, M: { get: () => M } });

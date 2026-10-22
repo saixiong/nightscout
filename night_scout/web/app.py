@@ -34,10 +34,13 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .. import __version__
 from ..core import actions
+from ..core import schedule as schedule_mod
+from ..core import setup as setup_mod
 from ..core.config import (
     CONFIG_LOCK,
     Config,
     ProviderConfig,
+    Schedule,
     Sources,
     load_config,
     save_config,
@@ -50,7 +53,7 @@ from ..core.http import PoliteClient, SourceError
 from ..core.ideas import start_project_from_idea
 from ..core.llm import LLM, ModelError
 from ..core.models import utcnow
-from ..core.profile import build_profile_file, load_profile
+from ..core.profile import build_profile_file, load_profile, profile_project
 from ..core.providers import PRESETS, make_llm, ollama_models, ollama_pull, preset, test_provider
 from ..core.safety import check_commands
 from ..core.sandbox import Plan, choose_mode
@@ -88,6 +91,15 @@ class ToggleBody(BaseModel):
 class AddSourceBody(BaseModel):
     type: str
     value: str
+
+
+class AddProjectBody(BaseModel):
+    path: str
+
+
+class ScheduleBody(BaseModel):
+    time: str
+    nightly: bool
 
 
 class KeyBody(BaseModel):
@@ -439,9 +451,7 @@ def create_app(
         installed: bool | None = None
         via = None
         if sys.platform == "darwin":
-            from ..core.schedule import launchd_plist_path
-
-            installed, via = launchd_plist_path().exists(), "launchd"
+            installed, via = schedule_mod.launchd_plist_path().exists(), "launchd"
         return {"time": state["cfg"].schedule.time, "installed": installed, "via": via}
 
     def sandbox_info() -> dict[str, Any]:
@@ -618,6 +628,7 @@ def create_app(
             "notes_subdir": c.notes_subdir,
             "data_dir": pretty_path(c.data_path()),
             "features": {"impact": "impact" in score_cols, "ideas": has_table("ideas")},
+            "setup": setup_mod.setup_status(c),
         }
 
     @app.get("/api/morning")
@@ -1290,6 +1301,133 @@ def create_app(
     def pull_status(name: str) -> Any:
         job = jobs.get(f"pull:{name}")
         return {**job, **pulls.get(name, {})}
+
+    # -- setup walkthrough ---------------------------------------------------------------------
+    def setup_project_rows(c: Config) -> list[dict[str, Any]]:
+        profiled = setup_mod.profiled_names(c.profile_file())
+        rows = []
+        for ref in c.projects:
+            name = setup_mod.project_name(ref)
+            root = ref.resolved()
+            rows.append(
+                {
+                    "name": name,
+                    "path": pretty_path(str(root)),
+                    "exists": root.is_dir(),
+                    "found": setup_mod.project_files(root) if root.is_dir() else [],
+                    "profiled": name in profiled,
+                    "read": jobs.get(f"read:{name}"),
+                }
+            )
+        return rows
+
+    @app.get("/api/setup")
+    def setup_view() -> Any:
+        c = state["cfg"]
+        suggestions = [{**s, "path": pretty_path(s["path"])} for s in setup_mod.suggest_projects(c)]
+        return {
+            **setup_mod.setup_status(c),
+            "projects": setup_project_rows(c),
+            "suggestions": suggestions,
+            "schedule": schedule_info(),
+            "platform": sys.platform,
+        }
+
+    @app.post("/api/projects/add")
+    @config_writer
+    def add_project_route(body: AddProjectBody) -> Any:
+        c = load_config(config_path)
+        try:
+            ref, found = setup_mod.add_project(c, body.path)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        save_cfg(c)
+        name = setup_mod.project_name(ref)
+        return {
+            "ok": True,
+            "project": {"name": name, "path": pretty_path(str(ref.resolved())), "found": found},
+        }
+
+    @app.delete("/api/projects/{name}")
+    @config_writer
+    def remove_project_route(name: str) -> Any:
+        if jobs.get("profile")["state"] == "running" or jobs.get(f"read:{name}")["state"] == (
+            "running"
+        ):
+            raise HTTPException(409, "Gemma is reading projects; try again when it's done.")
+        c = load_config(config_path)
+        try:
+            setup_mod.remove_project(c, name)
+        except KeyError as e:
+            raise HTTPException(404, f"No project named {name!r}") from e
+        try:
+            setup_mod.remove_profile_entry(c.profile_file(), name)
+        except (ValueError, yaml.YAMLError) as e:
+            raise HTTPException(500, str(e)) from e
+        save_cfg(c)
+        return {"ok": True, "name": name}
+
+    @app.post("/api/projects/{name}/read")
+    def read_project(name: str) -> Any:
+        if jobs.get("profile")["state"] == "running":
+            raise HTTPException(409, "A profile rebuild is running; try again when it's done.")
+        c = state["cfg"]
+        try:
+            ref = setup_mod.find_project(c, name)
+        except KeyError as e:
+            raise HTTPException(404, f"No project named {name!r}") from e
+        if not ref.resolved().is_dir():
+            raise HTTPException(400, f"The folder for {name!r} isn't there any more.")
+
+        def work() -> None:
+            entry = profile_project(ref, llm())
+            entry["name"] = name  # keep the name the config uses
+            setup_mod.upsert_profile_entry(state["cfg"].profile_file(), entry)
+
+        started = jobs.start(f"read:{name}", work)
+        return {"ok": True, "started": started, **jobs.get(f"read:{name}")}
+
+    @app.get("/api/projects/{name}/read")
+    def read_project_status(name: str) -> Any:
+        return jobs.get(f"read:{name}")
+
+    @app.get("/api/schedule")
+    def schedule_view() -> Any:
+        out: dict[str, Any] = schedule_info()
+        out["plist"] = None
+        if sys.platform == "darwin":
+            raw = schedule_mod.launchd_plist(state["cfg"], config_path).decode()
+            home = str(Path.home())
+            out["plist"] = raw.replace(home, "~")
+            out["plist_path"] = pretty_path(schedule_mod.launchd_plist_path())
+        return out
+
+    @app.put("/api/schedule")
+    @config_writer
+    def put_schedule(body: ScheduleBody) -> Any:
+        c = load_config(config_path)
+        try:
+            c.schedule = Schedule(time=body.time)
+        except ValidationError as e:
+            raise HTTPException(400, "Use 24-hour time, like 04:30.") from e
+        save_cfg(c)
+        info = schedule_info()
+        if body.nightly:
+            message = schedule_mod.install(state["cfg"], config_path)
+        elif info["installed"]:
+            message = schedule_mod.uninstall()
+        else:
+            message = "Not scheduled. Run it with `night-scout run` whenever you like."
+        return {"ok": True, "message": message, "schedule": schedule_info()}
+
+    @app.post("/api/run")
+    def run_now() -> Any:
+        if run_status()["running"]:
+            raise HTTPException(409, "The scout is already out.")
+        if not profile_projects():
+            raise HTTPException(400, "Add a project and let Gemma read it first.")
+        pid = setup_mod.start_run(state["cfg"], config_path)
+        return {"ok": True, "pid": pid}
 
     # -- not wired yet --------------------------------------------------------------------
     def not_yet() -> JSONResponse:

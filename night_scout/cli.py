@@ -1,4 +1,4 @@
-"""Command line: init, run, serve, schedule. Thin on purpose; the work lives in core."""
+"""Command line: init, run, serve, setup, schedule. Thin on purpose; the work lives in core."""
 
 from __future__ import annotations
 
@@ -74,7 +74,18 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0 if result.ok else 1
 
 
-def cmd_serve(args: argparse.Namespace) -> int:
+def _port_free(port: int) -> bool:
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        try:
+            sock.bind(("127.0.0.1", port))
+        except OSError:
+            return False
+    return True
+
+
+def _serve(config_path: Path, port: int, open_browser: bool, page: str = "") -> int:
     import secrets
     import webbrowser
 
@@ -82,18 +93,37 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
     from .web.app import create_app
 
-    cfg = load_config(args.config)
+    if not config_path.exists():
+        # First launch: a starter config (no projects yet), so the web app can open Setup.
+        save_config(starter_config([]), config_path)
+        print(f"First launch: wrote a starter config to {_pretty(config_path)}.")
+        page = page or "#/setup"
+    if not _port_free(port):
+        print(
+            f"Something is already running on port {port}. If it's Night Scout, open its tab "
+            "and go to Settings → Setup, or stop it and run this again "
+            "(or pick another port with --port)."
+        )
+        return 1
+    cfg = load_config(config_path)
     key = secrets.token_urlsafe(24)
-    app = create_app(cfg, args.config, port=args.port, session_key=key)
-    url = f"http://127.0.0.1:{args.port}/?key={key}"
-    print(
-        f"Night Scout is running. Open this link (it signs your browser in):\n\n  {url}\n",
-        flush=True,
-    )
-    if not args.no_browser:
+    app = create_app(cfg, config_path, port=port, session_key=key)
+    url = f"http://127.0.0.1:{port}/?key={key}{page}"
+    what = "setup" if page == "#/setup" else "Night Scout"
+    print(f"Opening {what}. This link signs your browser in:\n\n  {url}\n", flush=True)
+    if open_browser:
         webbrowser.open(url)
-    uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning")
+    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
     return 0
+
+
+def cmd_serve(args: argparse.Namespace) -> int:
+    return _serve(args.config, args.port, not args.no_browser)
+
+
+def cmd_setup(args: argparse.Namespace) -> int:
+    """The web app, opened on the setup walkthrough (current settings filled in)."""
+    return _serve(args.config, args.port, not args.no_browser, page="#/setup")
 
 
 def cmd_schedule(args: argparse.Namespace) -> int:
@@ -141,6 +171,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--port", type=int, default=8765)
     s.add_argument("--no-browser", action="store_true", help="don't open a browser tab")
     s.set_defaults(func=cmd_serve)
+
+    s = sub.add_parser("setup", help="open the setup walkthrough in the web UI (run it any time)")
+    s.add_argument("--port", type=int, default=8765)
+    s.add_argument("--no-browser", action="store_true", help="don't open a browser tab")
+    s.set_defaults(func=cmd_setup)
 
     s = sub.add_parser("schedule", help="print (or install) the nightly job")
     g = s.add_mutually_exclusive_group()
