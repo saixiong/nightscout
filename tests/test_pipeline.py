@@ -76,7 +76,16 @@ def _judge_answer(user: str) -> dict:
         ]
     else:
         rel = [{"project": "pdf-tool", "relevance": 0.0, "reason": "Unrelated."}]
-    return {"summary": "Summary.", "kind": "release", "topics": ["PDF", "python"], "projects": rel}
+    return {
+        "summary": "Summary.",
+        "kind": "release",
+        "topics": ["PDF", "python"],
+        "projects": rel,
+        "impact": "Change" if "pypdf" in item else "relevant",
+        # verbatim (case-insensitive) entries survive; the invented one is dropped
+        "matched": ["Faster PDF parsers", "pdf parsing.", "blazing speed"],
+        "next_step": "Upgrade  pypdf and rerun the tests.",
+    }
 
 
 def _actions_answer(user: str) -> dict:
