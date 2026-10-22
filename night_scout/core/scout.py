@@ -24,6 +24,7 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Callable, Iterable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -44,6 +45,8 @@ YOUTUBE_KEY_ENV = "YOUTUBE_API_KEY"
 API_BASE = "https://www.googleapis.com/youtube/v3"
 MAX_PER_TERM = 10
 YTDLP_TIMEOUT = 90  # seconds per yt-dlp call
+YTDLP_WORKERS = 4  # yt-dlp processes at once (polite: one channel, a handful of pages)
+YTDLP_CHUNK = 3  # videos per yt-dlp call when reading descriptions
 
 _CHANNEL_ID = re.compile(r"^UC[\w-]{22}$")
 _VIDEO_ID = re.compile(r"^[\w-]{11}$")
@@ -208,55 +211,78 @@ def _search_api(
     return out
 
 
-def _search_ytdlp(
-    channel_id: str, term: str, cmd: list[str], run: Runner
-) -> list[tuple[str, str, str, datetime | None]]:
-    base = [*cmd, "--ignore-config", "--no-cache-dir", "--no-warnings"]
+def _ytdlp_base(cmd: list[str]) -> list[str]:
+    return [*cmd, "--ignore-config", "--no-cache-dir", "--no-warnings"]
+
+
+def _ytdlp_listing(channel_id: str, term: str, cmd: list[str], run: Runner) -> list[str]:
+    """Video ids from the channel's own search page for `term` (YouTube's order)."""
     url = f"https://www.youtube.com/channel/{channel_id}/search?query={quote(term)}"
+    argv = [*_ytdlp_base(cmd), "--flat-playlist", "--playlist-end", str(MAX_PER_TERM), "-J", url]
     try:
-        listing = json.loads(
-            run(
-                [*base, "--flat-playlist", "--playlist-end", str(MAX_PER_TERM), "-J", url],
-                YTDLP_TIMEOUT,
-            )
-            or "{}"
-        )
+        listing = json.loads(run(argv, YTDLP_TIMEOUT) or "{}")
     except (subprocess.TimeoutExpired, json.JSONDecodeError) as e:
         raise ScoutError(f"yt-dlp couldn't search the channel ({type(e).__name__}).") from e
-    ids = [
+    return [
         str(e.get("id"))
         for e in listing.get("entries") or []
         if _VIDEO_ID.match(str(e.get("id", ""))) and e.get("ie_key", "Youtube") == "Youtube"
     ][:MAX_PER_TERM]
-    if not ids:
-        return []
-    # The flat listing has titles only; descriptions and dates need each video's page.
+
+
+def _ytdlp_meta(ids: list[str], cmd: list[str], run: Runner) -> dict[str, dict[str, Any]]:
+    """Title, description and date for each video, read a few at a time in parallel."""
+    chunks = [ids[i : i + YTDLP_CHUNK] for i in range(0, len(ids), YTDLP_CHUNK)]
+
+    def one(chunk: list[str]) -> str:
+        argv = [*_ytdlp_base(cmd), "--skip-download", "--ignore-errors", "-j", "--", *chunk]
+        return run(argv, YTDLP_TIMEOUT)
+
+    meta: dict[str, dict[str, Any]] = {}
     try:
-        lines = run(
-            [*base, "--skip-download", "--ignore-errors", "-j", "--", *ids], YTDLP_TIMEOUT * 2
-        )
+        with ThreadPoolExecutor(max_workers=YTDLP_WORKERS) as pool:
+            outputs = list(pool.map(one, chunks))
     except subprocess.TimeoutExpired as e:
         raise ScoutError("yt-dlp took too long reading the videos.") from e
-    meta: dict[str, dict[str, Any]] = {}
-    for line in lines.splitlines():
+    for line in "\n".join(outputs).splitlines():
         try:
             v = json.loads(line)
         except json.JSONDecodeError:
             continue
         if isinstance(v, dict) and v.get("id"):
             meta[str(v["id"])] = v
-    out = []
-    for vid in ids:
-        v = meta.get(vid)
-        if not v:
-            continue
-        d = str(v.get("upload_date") or "")
-        when = (
-            datetime(int(d[:4]), int(d[4:6]), int(d[6:8]), tzinfo=UTC)
-            if len(d) == 8 and d.isdigit()
-            else None
+    return meta
+
+
+def _search_ytdlp(
+    channel_id: str, terms: Sequence[str], cmd: list[str], run: Runner
+) -> dict[str, list[tuple[str, str, str, datetime | None]]]:
+    """Per term: (id, title, description, date) of YouTube's results, each video read once."""
+    with ThreadPoolExecutor(max_workers=YTDLP_WORKERS) as pool:
+        listings = dict(
+            zip(
+                terms,
+                pool.map(lambda t: _ytdlp_listing(channel_id, t, cmd, run), terms),
+                strict=True,
+            )
         )
-        out.append((vid, str(v.get("title") or ""), str(v.get("description") or ""), when))
+    unique = list(dict.fromkeys(v for ids in listings.values() for v in ids))
+    meta = _ytdlp_meta(unique, cmd, run) if unique else {}
+    out: dict[str, list[tuple[str, str, str, datetime | None]]] = {}
+    for term, ids in listings.items():
+        rows = []
+        for vid in ids:
+            v = meta.get(vid)
+            if not v:
+                continue
+            d = str(v.get("upload_date") or "")
+            when = (
+                datetime(int(d[:4]), int(d[4:6]), int(d[6:8]), tzinfo=UTC)
+                if len(d) == 8 and d.isdigit()
+                else None
+            )
+            rows.append((vid, str(v.get("title") or ""), str(v.get("description") or ""), when))
+        out[term] = rows
     return out
 
 
@@ -282,11 +308,12 @@ def search_youtube_channel(
         )
     found: dict[str, Item] = {}
     results: list[TermResult] = []
+    by_term = None if api_key else _search_ytdlp(channel_id, terms, ytdlp or [], run)
     for term in terms:
         hits = (
-            _search_api(channel_id, term, api_key, client)
-            if api_key
-            else _search_ytdlp(channel_id, term, ytdlp or [], run)
+            by_term[term]
+            if by_term is not None
+            else _search_api(channel_id, term, api_key or "", client)
         )
         tr = TermResult(term, checked=len(hits))
         for vid, title, text, when in hits:
