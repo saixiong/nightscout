@@ -62,7 +62,8 @@ function showStep(tries = 0) {
   ov.classList.add("moving");
   const place = () => {
     const el = $(st.sel);
-    if (!el) { if (tries < 6) return setTimeout(() => showStep(tries + 1), 300); tourI++; return showStep(); }
+    // Pages like Settings load their data first; give them up to ~6 s before skipping a step.
+    if (!el) { if (tries < 20) return setTimeout(() => showStep(tries + 1), 300); tourI++; return showStep(); }
     el.scrollIntoView({ block: "center" });
     setTimeout(() => {
       const r = el.getBoundingClientRect(), pad = 8, hole = $(".hole", ov), tip = $(".tip", ov);

@@ -423,7 +423,8 @@ function renderPane(c, tab, root) {
   if (tab.startsWith("note-")) return paneNote(c, pane, +tab.slice(5));
   const txt = c.transcript || c.text || "";
   pane.innerHTML = `<h4 class="sec-h">${c.transcript ? "Transcript excerpt" : "From the source"}</h4>
-    <div class="source-text">${esc((txt || "(no text)").slice(0, 1400))}${txt.length > 1400 ? "…" : ""}</div>
+    ${txt ? `<div class="source-text">${esc(txt.slice(0, 1400))}${txt.length > 1400 ? "…" : ""}</div>`
+      : `<p class="muted">This ${c.source === "hackernews" ? "Hacker News post is a link" : "item came"} without text of its own. Open the original, or use the Research tab to have Gemma read the full page and brief you.</p>`}
     ${isWeb(c.url) ? `<div class="row"><a class="btn ghost" ${ext(c.url)}>Open the original ↗</a></div>` : ""}`;
 }
 
