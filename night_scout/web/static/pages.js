@@ -26,7 +26,7 @@ NS.pages.guide = sec => {
   </div>`;
   wireTilt($(".stage"));
   $$("#guideBody h2").forEach(h => (h.id = "g-" + slug(h.textContent)));
-  if (sec) { document.body.classList.add("card-open"); const t = $("#g-" + sec); if (t) setTimeout(() => t.scrollIntoView({ block: "start", behavior: "smooth" }), 350); }
+  if (sec) { document.body.classList.add("card-open"); const t = document.getElementById("g-" + sec); if (t) setTimeout(() => t.scrollIntoView({ block: "start", behavior: "smooth" }), 350); }
   $("#tourGo").onclick = startTour;
 };
 
