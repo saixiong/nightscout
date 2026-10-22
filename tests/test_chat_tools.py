@@ -458,8 +458,10 @@ def test_search_tonight_ranks_matches_without_digest_columns(store: Store) -> No
 def test_search_tonight_uses_digest_columns_when_present(store: Store) -> None:
     ids = seed_day(store)
     with store.tx() as conn:
+        have = {r[1] for r in conn.execute("PRAGMA table_info(scores)")}
         for col in ("headline TEXT", "digest_topic TEXT", "digest_relevance REAL"):
-            conn.execute(f"ALTER TABLE scores ADD COLUMN {col}")
+            if col.split()[0] not in have:  # the Digest migration adds them once merged
+                conn.execute(f"ALTER TABLE scores ADD COLUMN {col}")
         conn.execute(
             "UPDATE scores SET headline=?, digest_topic=? WHERE item_id=?",
             ("Command-line access to OpenAI", "Developer tools", ids["b"]),

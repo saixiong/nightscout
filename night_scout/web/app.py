@@ -1358,7 +1358,9 @@ def create_app(
         c = load_config(config_path)
         base = "".join(ch if ch.isalnum() else "-" for ch in body.name.lower()).strip("-")[:24]
         pid, n = base or "custom", 2
-        taken = {p.id for p in c.all_providers()} | set(PRESETS)
+        taken = (
+            {p.id for p in c.all_providers()} | set(PRESETS) | {"brave-search"}
+        )  # web search key
         while pid in taken:
             pid, n = f"{base[:20]}-{n}", n + 1
         try:

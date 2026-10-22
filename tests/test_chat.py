@@ -187,8 +187,10 @@ def test_item_context_has_text_summary_url_and_transcript(store: Store) -> None:
 def test_digest_context_prefers_digest_columns(store: Store) -> None:
     ids = seed_day(store)
     with store.tx() as conn:
+        have = {r[1] for r in conn.execute("PRAGMA table_info(scores)")}
         for col in ("headline TEXT", "digest_topic TEXT", "digest_relevance REAL"):
-            conn.execute(f"ALTER TABLE scores ADD COLUMN {col}")
+            if col.split()[0] not in have:  # the Digest migration adds them once merged
+                conn.execute(f"ALTER TABLE scores ADD COLUMN {col}")
         conn.execute(
             "UPDATE scores SET digest_topic='Local LLMs', digest_relevance=0.9, headline=? "
             "WHERE item_id=?",
