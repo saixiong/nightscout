@@ -14,7 +14,7 @@ import threading
 from datetime import date
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote
 
 import yaml
 from fastapi import FastAPI, HTTPException
@@ -29,12 +29,12 @@ from ..core.discover import add_source
 from ..core.http import PoliteClient, SourceError
 from ..core.llm import ToolChat
 from ..core.profile import load_profile, save_topics
-from ..core.providers import close_llm, make_llm
+from ..core.providers import close_llm, make_llm, runs_locally
 from ..core.secrets import SecretStoreUnavailable, delete_key, get_key, masked, set_key
 from ..core.tools import BRAVE_KEY_ID, TOOLS, ToolContext, offered
 from ..core.tools.search import web_search
 from ..core.tools.tonight import latest_day
-from .app import LOOPBACK, config_writer
+from .app import config_writer
 
 log = logging.getLogger(__name__)
 
@@ -108,7 +108,7 @@ def register(
         pid, model = split_ref(ref)
         try:
             p = c.provider(pid)
-            local = p.kind == "ollama" or urlsplit(p.base_url).hostname in LOOPBACK
+            local = runs_locally(p)
             name = p.name or p.id
         except KeyError:
             local, name = False, pid

@@ -27,7 +27,7 @@ class ModelConfig(BaseModel):
 
 
 DEFAULT_PROVIDER = "ollama"
-ProviderKind = Literal["ollama", "openai_compatible"]
+ProviderKind = Literal["ollama", "openai_compatible", "anthropic"]
 RoleName = Literal["judge", "fallback", "chat", "embed"]
 ROLE_NAMES: tuple[RoleName, ...] = ("judge", "fallback", "chat", "embed")
 
@@ -70,7 +70,7 @@ class ProviderConfig(BaseModel):
     name: str = ""
     base_url: str
     api_key_env: str | None = None
-    # Models to offer for roles. Ollama lists its own; OpenAI-compatible servers are told.
+    # Models to offer for roles. Ollama lists its own; the others are told (Settings → Models ▾).
     models: list[str] = Field(default_factory=list)
 
     @field_validator("id")

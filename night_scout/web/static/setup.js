@@ -54,12 +54,13 @@ function freshState() {
   const rerun = !D.setup.needed, j = B().judge || {};
   const pid = String(j.ref || "").split("/")[0] || "ollama";
   const where = j.local === false ? "cloud" : "local";
-  const known = pid === "ollama" || !!pv(pid) || presets().some(c => c.id === pid && !c.soon);
+  const known = pid === "ollama" || !!pv(pid) || isPreset(pid);
   U = {
     rerun, step: 0, reached: rerun ? 5 : 0, dirty: {}, saved: {}, busy: false, where,
     // the provider picked under each choice; "new" is the add-a-server form
     pick: { local: where === "local" && known ? pid : "ollama", cloud: where === "cloud" && known ? pid : "openai" },
     models: pid !== "ollama" && j.model ? { [pid]: j.model } : {}, tested: {},
+    live: {}, testOut: {}, moreCloud: false, // live: a keyed preset's model list (array, "loading" or "failed")
     pulls: {}, olCheck: null, confirm: null, readQ: null, ipj: 0, addType: "website",
     time: D.sc.time, nightly: rerun ? D.sc.installed !== false : true, plist: false, go: "now",
     // Step 2: "Digest + My projects" or "Just the Digest" (projects are optional since Oct 22)
@@ -80,7 +81,7 @@ const have = n => (ollama()?.models || []).some(m => m.name === n || m.name === 
 const sizeOf = n => (ollama()?.models || []).find(m => m.name === n)?.size || "";
 const olUp = () => ollama()?.status === "connected";
 // Same provider list as Settings → AI Providers: Ollama, LM Studio, any OpenAI-compatible
-// server, and the cloud presets (OpenAI, OpenRouter; Anthropic and Gemini marked "soon").
+// server, and the cloud presets (Anthropic, Gemini, OpenAI, OpenRouter, then "More…").
 const presets = () => NS.CLOUD || [];
 const pv = id => D.pv.providers.find(p => p.id === id);
 const isPreset = id => presets().some(c => c.id === id);
@@ -89,7 +90,8 @@ function provOptions(where) {
   const mine = customs().filter(p => (p.local !== false) === (where === "local")).map(p => ({ id: p.id, name: p.name, tile: "⚙" }));
   return where === "local"
     ? [{ id: "ollama", name: "Ollama", tile: "🦙" }, { id: "lmstudio", name: "LM Studio", tile: "LM" }, ...mine, { id: "new", name: "Other server", tile: "+" }]
-    : [...presets(), ...mine, { id: "new", name: "Other endpoint", tile: "+" }];
+    : [...presets().filter(c => !c.more || U.moreCloud || cur() === c.id || pv(c.id)?.key?.configured), ...mine,
+      ...(U.moreCloud ? [] : [{ id: "more", name: "More…" }]), { id: "new", name: "Other endpoint", tile: "+" }];
 }
 const cur = () => U.pick[U.where];
 const curName = () => pv(cur())?.name || presets().find(c => c.id === cur())?.name || cur();
@@ -288,19 +290,21 @@ function stepModel(head) {
     ${olUp() && cur() === "ollama" && missing.length > 1 ? `<div class="row"><button class="btn" id="pullAll">Pull all ${missing.length}</button><span class="muted small">Several GB; it can take a while. You can leave this page open.</span></div>` : ""}
   </section>`;
   const opts = provOptions(U.where);
-  const seg = `<div class="seg provseg" id="cprov">${opts.map(o => `<button data-p="${esc(o.id)}" class="${cur() === o.id ? "on" : ""}" ${o.soon ? "disabled" : ""}>${esc(o.name)}${o.soon ? ` <small>soon</small>` : ""}</button>`).join("")}</div>`;
-  const soon = U.where === "cloud" ? `<p class="muted small mt10">Anthropic and Google Gemini get native clients after the contest; OpenRouter reaches their models today.</p>` : "";
+  const seg = `<div class="seg provseg" id="cprov">${opts.map(o => `<button data-p="${esc(o.id)}" class="${cur() === o.id ? "on" : ""}">${esc(o.name)}</button>`).join("")}</div>`;
   body.innerHTML = head("Where should Gemma <em>think?</em>", "Night Scout reads every item with a language model. Local is free and private; a cloud model can be faster on a small machine.") + `
     <div class="choices">
       <button class="choice ${U.where === "local" ? "on" : ""}" data-where="local"><span class="tile">🦙</span><b>On ${here()} <span class="rec">RECOMMENDED</span></b><small>Ollama, LM Studio or another local server. Nothing leaves your machine.</small><span class="pros">free · private · works offline</span></button>
-      <button class="choice ${U.where === "cloud" ? "on" : ""}" data-where="cloud"><span class="tile">↗</span><b>Cloud provider</b><small>OpenAI, OpenRouter or any OpenAI-compatible endpoint. Item text is sent to them.</small><span class="pros">no big download · pay per use</span></button>
+      <button class="choice ${U.where === "cloud" ? "on" : ""}" data-where="cloud"><span class="tile">↗</span><b>Cloud provider</b><small>Anthropic, Google Gemini, OpenAI, OpenRouter or any OpenAI-compatible endpoint. Item text is sent to them.</small><span class="pros">no big download · pay per use</span></button>
     </div>
-    <div class="provpick mt12"><span class="muted small">Provider</span>${seg}</div>${soon}
+    <div class="provpick mt12"><span class="muted small">Provider</span>${seg}</div>
     ${cur() === "ollama" ? olCard : provCard() + olCard}
     <p class="muted small mt16">Fine-tune every model role later in <a href="#/settings/providers">Settings → AI Providers</a>.</p>`;
   fx(body);
   $$(".choice", body).forEach(b => b.onclick = () => { if (U.where === b.dataset.where) return; U.where = b.dataset.where; mark(); drawBody(); });
-  $$("#cprov button", body).forEach(b => b.onclick = () => { if (b.disabled || cur() === b.dataset.p) return; U.pick[U.where] = b.dataset.p; mark(); drawBody(); });
+  $$("#cprov button", body).forEach(b => b.onclick = () => {
+    if (b.dataset.p === "more") { U.moreCloud = true; return drawBody(); }
+    if (cur() === b.dataset.p) return; U.pick[U.where] = b.dataset.p; mark(); drawBody();
+  });
   $("#olCheck").onclick = async () => { U.olCheck = "now"; drawBody(); await reload("pv"); if (!U) return; U.olCheck = null; drawBody(); drawBar(); drawRail(); };
   $$("[data-pull]", body).forEach(b => b.onclick = () => pull(b.dataset.pull));
   $("#pullAll") && ($("#pullAll").onclick = () => missing.forEach(([n]) => pull(n)));
@@ -317,7 +321,8 @@ function provCard() {
       <label>Model<input type="text" id="nModel" placeholder="gemma-4-12b-it" autocomplete="off"></label></div>
     <div class="row"><button class="btn primary" id="nSave">Add &amp; test</button></div></section>`;
   const key = p?.key?.configured ? p.key : null, wantKey = !!pre && (!key || U.keyOpen === id);
-  const name = curName(), ph = pre?.ph || (id === "lmstudio" ? "the model loaded in LM Studio, e.g. google/gemma-3-12b" : "e.g. gemma-4-12b-it");
+  const name = curName(), ph = pre ? `a model id from ${pre.name}` : id === "lmstudio" ? "the model loaded in LM Studio, e.g. google/gemma-3-12b" : "e.g. gemma-4-12b-it";
+  const live = pre && key ? U.live[id] : null;
   const status = id === "lmstudio" || !pre ? (p?.status === "connected" ? `<span class="badge ok">Connected</span>` : p?.status === "offline" ? `<span class="badge off">Not running</span>` : `<span class="badge off">Not checked</span>`)
     : key ? `<span class="badge ok">Configured</span>` : `<span class="badge off">Not configured</span>`;
   const url = p?.base_url || (id === "lmstudio" ? "http://127.0.0.1:1234/v1" : "");
@@ -327,11 +332,12 @@ function provCard() {
       ${key && pre && !wantKey ? `<button class="btn ghost" id="keyNew">Use a different key</button>` : ""}</div>
     ${key && !wantKey ? `<div class="small mt10"><span class="keypill mono">${esc(key.masked)}</span> <span class="muted">${key.source === "env" ? `from <code>${esc(pre?.env || "an environment variable")}</code>` : `🔒 in ${esc(keychain())}`}</span></div>` : ""}
     ${wantKey ? `<div class="keyform"><div class="keyin"><input type="password" id="keyVal" placeholder="Paste your ${esc(name)} API key" autocomplete="off"><button class="eye" id="eye" title="Show">👁</button></div>
-       <input type="text" id="keyModel" value="${esc(curModel())}" placeholder="Model for judging: ${esc(ph)}" autocomplete="off">
-       <div class="small muted">${pre.url ? `<a ${NS.ext(pre.url)}>Get a key →</a> · ` : ""}Or set <code>${esc(pre.env)}</code>.</div>
+       <div class="small muted">${pre.url ? `<a ${NS.ext(pre.url)}>Get a key →</a> · ` : ""}Or set <code>${esc(pre.env)}</code>. After saving, Night Scout tests the key and lists ${esc(name)}'s models so you can pick one.</div>
        <div class="row mt0"><button class="btn primary" id="keySave">Save to ${esc(keychain())} &amp; test</button>${key ? `<button class="btn ghost" id="keyCancel">Cancel</button>` : ""}<span class="muted small">Never written to config.yaml, the logs or the sandbox.</span></div></div>`
-    : `<div class="addrow"><input type="text" id="cModel" value="${esc(curModel())}" placeholder="Model for judging: ${esc(ph)}" autocomplete="off"><button class="btn ghost" id="cTest">${curSaved() ? "Test" : "Use &amp; test"}</button></div>`}
-    <div id="cTestOut" class="mt10"></div>
+    : Array.isArray(live) && live.length ? `<div class="addrow"><select id="cModelSel" aria-label="Model for judging"><option value="" ${curModel() ? "" : "selected"} disabled>Pick the model to judge with…</option>${live.map(m => `<option value="${esc(m.id)}" ${m.id === curModel() ? "selected" : ""}>${esc(m.name && m.name !== m.id ? `${m.name} · ${m.id}` : m.id)}</option>`).join("")}</select><button class="btn ghost" id="cTest">${curSaved() ? "Test" : "Use &amp; test"}</button></div>
+       <p class="muted small m-4">Listed live from ${esc(name)}. Offer more models (for the chat, say) in <a href="#/settings/providers">Settings → AI Providers → Models ▾</a>.</p>`
+    : `${live === "loading" ? `<p class="muted small">◌ Asking ${esc(name)} for its models…</p>` : ""}<div class="addrow"><input type="text" id="cModel" value="${esc(curModel())}" placeholder="Model for judging: ${esc(ph)}" autocomplete="off"><button class="btn ghost" id="cTest">${curSaved() ? "Test" : "Use &amp; test"}</button></div>`}
+    <div id="cTestOut" class="mt10">${U.testOut[id] || ""}</div>
   </section>
   ${leaves() ? `<div class="supply mt12"><strong>Leaves this machine:</strong> item text and your project profiles go to ${esc(name)} for judging. Embeddings stay local, so Ollama with <span class="mono">${esc(B().model.embed)}</span> is still needed.</div>`
     : `<div class="supply mt12">Embeddings for the pre-filter run in Ollama with <span class="mono">${esc(B().model.embed)}</span>, so Ollama is still needed.</div>`}`;
@@ -341,6 +347,8 @@ function wireProvCard() {
   $("#eye", body) && ($("#eye", body).onclick = () => { const i = $("#keyVal"); i.type = i.type === "password" ? "text" : "password"; });
   $("#keyNew", body) && ($("#keyNew", body).onclick = () => { U.keyOpen = id; drawBody(); $("#keyVal")?.focus(); });
   $("#keyCancel", body) && ($("#keyCancel", body).onclick = () => { U.keyOpen = null; drawBody(); });
+  $("#cModelSel", body) && ($("#cModelSel", body).onchange = e => { U.models[id] = e.target.value; delete U.testOut[id]; $("#cTestOut").innerHTML = ""; mark(); drawBar(); drawRail(); const t = $("#cTest"); if (t) t.textContent = curSaved() ? "Test" : "Use & test"; });
+  if (isPreset(id) && pv(id)?.key?.configured && U.live[id] === undefined) loadLive(id);
   $("#cModel", body) && ($("#cModel", body).oninput = e => { U.models[id] = e.target.value.trim(); mark(); drawBar(); drawRail(); const t = $("#cTest"); if (t) t.textContent = curSaved() ? "Test" : "Use & test"; });
   $("#cTest", body) && ($("#cTest", body).onclick = async () => {
     const m = curModel(); if (!m) return $("#cModel").focus();
@@ -352,14 +360,14 @@ function wireProvCard() {
     testProv();
   });
   $("#keySave", body) && ($("#keySave", body).onclick = async () => {
-    const input = $("#keyVal"), v = input.value.trim(), model = $("#keyModel").value.trim();
+    const input = $("#keyVal"), v = input.value.trim();
     if (v.length < 12) return toast("That doesn't look like an API key.");
-    if (!model) return toast("Add the model to judge with, too.");
-    const r = await api("PUT", `/api/keys/${encodeURIComponent(id)}`, { key: v, model });
+    const r = await api("PUT", `/api/keys/${encodeURIComponent(id)}`, { key: v });
     input.value = "";
     if (!r.ok) return failToast(r, "Saving keys");
     if (!U) return;
-    U.models[id] = model; U.keyOpen = null; mark(); await reload("pv"); if (!U || cur() !== id) return; drawBody(); drawBar(); drawRail(); testProv();
+    // A new key: test it, then list the provider's models (loadLive) to pick one from.
+    delete U.live[id]; U.keyOpen = null; mark(); await reload("pv"); if (!U || cur() !== id) return; drawBody(); drawBar(); drawRail(); testProv();
   });
   $("#nSave", body) && ($("#nSave", body).onclick = async () => {
     const nb = { name: $("#nName").value.trim(), base_url: $("#nUrl").value.trim(), api_key: $("#nKey").value, model: $("#nModel").value.trim() };
@@ -373,18 +381,28 @@ function wireProvCard() {
     U.pick[U.where] = r.data.id; U.models[r.data.id] = nb.model; mark(); drawBody(); drawBar(); drawRail(); testProv();
   });
 }
+/* A keyed preset's models, live from the provider, for the judge picker. */
+async function loadLive(id) {
+  U.live[id] = "loading";
+  const r = await api("GET", `/api/providers/${encodeURIComponent(id)}/models`);
+  if (!U) return;
+  U.live[id] = r.ok && Array.isArray(r.data?.models) ? r.data.models : "failed";
+  if (!r.ok) failToast(r, "Listing models");
+  if (step() === "model" && cur() === id) { drawBody(); drawBar(); }
+}
 async function testProv() {
-  const out = $("#cTestOut"); if (!out || !U) return;
+  if (!$("#cTestOut") || !U) return;
   const id = cur(), ref = judgeWanted();
-  out.innerHTML = `<div class="checks"><span class="now">◌ Health</span><span>○ Auth</span><span>○ Chat</span></div>`;
+  // Kept in U.testOut so a redraw (say, the live model list arriving) doesn't wipe it.
+  const show = html => { if (!U) return; U.testOut[id] = html; const o = $("#cTestOut"); if (o && cur() === id) o.innerHTML = html; };
+  show(`<div class="checks"><span class="now">◌ Health</span><span>○ Auth</span><span>○ Chat</span></div>`);
   const r = await api("POST", `/api/providers/${encodeURIComponent(id)}/test`, { model: curModel() });
   if (!U) return;
-  if (!r.ok) { const o = $("#cTestOut"); if (o) o.innerHTML = ""; return failToast(r, "Testing providers"); }
+  if (!r.ok) { show(""); return failToast(r, "Testing providers"); }
   const steps = r.data?.steps || [], failed = steps.find(s => !s.ok);
   U.tested[ref] = !failed; drawBar(); drawRail();
-  if (!$("#cTestOut") || cur() !== id) return;
-  $("#cTestOut").innerHTML = `<div class="checks">${steps.map(s => `<span class="${s.ok ? "good" : "bad"}">${s.ok ? "✓" : "✕"} ${esc(s.name)}</span>`).join("")}</div>` +
-    (failed ? `<p class="small neg testmsg">Test failed at ${esc(failed.name)}: ${esc(failed.detail || "")}</p>` : `<p class="small testmsg good">Connection test passed.${steps.at(-1)?.detail ? " " + esc(steps.at(-1).detail) : ""}</p>`);
+  show(`<div class="checks">${steps.map(s => `<span class="${s.ok ? "good" : "bad"}">${s.ok ? "✓" : "✕"} ${esc(s.name)}</span>`).join("")}</div>` +
+    (failed ? `<p class="small neg testmsg">Test failed at ${esc(failed.name)}: ${esc(failed.detail || "")}</p>` : `<p class="small testmsg good">Connection test passed.${steps.at(-1)?.detail ? " " + esc(steps.at(-1).detail) : ""}</p>`));
 }
 async function pull(n) {
   if (!U || U.pulls[n]) return;

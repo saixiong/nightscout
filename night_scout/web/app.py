@@ -53,10 +53,19 @@ from ..core.discover import add_source
 from ..core.feedback import MUTE_AT, MUTE_VOTES, compute_weights
 from ..core.http import PoliteClient, SourceError
 from ..core.ideas import start_project_from_idea
-from ..core.llm import LLM, ModelError
+from ..core.llm import LLM, ModelError, ModelUnavailable
 from ..core.models import utcnow
 from ..core.profile import Profile, build_profile_file, load_profile, profile_project, save_topics
-from ..core.providers import PRESETS, make_llm, ollama_models, ollama_pull, preset, test_provider
+from ..core.providers import (
+    PRESETS,
+    fetch_models,
+    make_llm,
+    ollama_models,
+    ollama_pull,
+    preset,
+    runs_locally,
+    test_provider,
+)
 from ..core.safety import check_commands
 from ..core.sandbox import Plan, choose_mode
 from ..core.secrets import (
@@ -113,12 +122,35 @@ class NewProvider(BaseModel):
     name: str
     base_url: str
     api_key: str | None = None
-    model: str | None = None
+    model: str | None = None  # Setup's add form sends one model
+    models: list[str] | None = None  # the Settings sheet sends the list
+
+
+class EditProvider(BaseModel):
+    name: str
+    base_url: str
+    api_key: str | None = None  # blank keeps the stored key
+    models: list[str] = []
+
+
+class ProbeBody(BaseModel):
+    base_url: str
+    api_key: str | None = None
+    id: str | None = None  # an existing custom provider: use its stored key if api_key is blank
+
+
+class DraftBody(BaseModel):
+    name: str
+    base_url: str
+    api_key: str | None = None
+    models: list[str] = []
+    id: str | None = None
 
 
 class RolesBody(BaseModel):
     judge: str | None = None
     fallback: str | None = None
+    chat: str | None = None  # "" = same as the Judge
     embed: str | None = None
 
 
@@ -127,7 +159,8 @@ class PullBody(BaseModel):
 
 
 class ModelBody(BaseModel):
-    model: str
+    model: str | None = None  # append one (LM Studio, Setup)
+    models: list[str] | None = None  # replace the offered list (Models ▾)
 
 
 class ProviderTestBody(BaseModel):
@@ -135,6 +168,37 @@ class ProviderTestBody(BaseModel):
 
 
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
+# Keychain ids used for other keys (web search, YouTube): never a provider id.
+RESERVED_IDS = frozenset({"brave-search", "youtube-data-api"})
+
+
+def model_name_ok(m: str) -> bool:
+    return bool(m) and len(m) <= 200 and not any(ch.isspace() for ch in m)
+
+
+def clean_models(models: list[str]) -> list[str]:
+    """Strip, de-duplicate, validate. Raises HTTPException(400) on a bad name."""
+    out: list[str] = []
+    for raw in models:
+        m = str(raw).strip()
+        if not m:
+            continue
+        if not model_name_ok(m):
+            raise HTTPException(400, f"That model name doesn't look right: {m[:60]!r}")
+        if m not in out:
+            out.append(m)
+    if len(out) > 300:
+        raise HTTPException(400, "That's too many models to offer; tick fewer.")
+    return out
+
+
+def same_origin(a: str, b: str) -> bool:
+    pa, pb = urlsplit(a), urlsplit(b)
+    return (pa.scheme, pa.hostname, pa.port) == (pb.scheme, pb.hostname, pb.port)
+
+
+def pydantic_msg(e: ValidationError) -> str:
+    return "; ".join(str(err["msg"]).removeprefix("Value error, ") for err in e.errors())[:300]
 
 
 def config_writer(fn: Any) -> Any:
@@ -616,7 +680,7 @@ def create_app(
         pid, model = split_ref(ref)
         try:
             p = c.provider(pid)
-            local = p.kind == "ollama" or urlsplit(p.base_url).hostname in LOOPBACK
+            local = runs_locally(p)
             name = p.name or p.id
         except KeyError:
             local, name = False, pid
@@ -1198,12 +1262,7 @@ def create_app(
         return {"ok": True, "path": pretty_path(str(path))}
 
     # -- providers, keys, roles ----------------------------------------------------------------
-    def is_local(p: ProviderConfig) -> bool:
-        return p.kind == "ollama" or urlsplit(p.base_url).hostname in (
-            "127.0.0.1",
-            "localhost",
-            "::1",
-        )
+    is_local = runs_locally
 
     def quick_status(p: ProviderConfig) -> tuple[str, str | None]:
         """connected/offline for local servers (cheap); 'unknown' for remote ones."""
@@ -1222,10 +1281,15 @@ def create_app(
         return "connected", version
 
     def role_labels(c: Config) -> dict[str, str]:
-        names = {"judge": "Judge · Research", "fallback": "Fallback", "embed": "Embeddings"}
+        names = {
+            "judge": "Judge · Research",
+            "chat": "Chat",
+            "fallback": "Fallback",
+            "embed": "Embeddings",
+        }
         out: dict[str, str] = {}
         for role, label in names.items():
-            ref = c.role_ref(role)  # type: ignore[arg-type]
+            ref = c.roles.chat if role == "chat" else c.role_ref(role)  # type: ignore[arg-type]
             if ref:
                 out[ref] = f"{out[ref]} · {label}" if ref in out else label
         return out
@@ -1259,6 +1323,9 @@ def create_app(
         ids = [p.id for p in c.all_providers()]
         if "lmstudio" not in ids:
             ids.append("lmstudio")  # always offer the LM Studio card
+        for pid, pre in PRESETS.items():  # a key in the environment counts before it's saved
+            if pid not in ids and pre.api_key_env and os.environ.get(pre.api_key_env, "").strip():
+                ids.append(pid)
         for pid in ids:
             p = c.provider(pid) if pid in {x.id for x in c.all_providers()} else preset(pid)
             status, version = quick_status(p)
@@ -1294,8 +1361,23 @@ def create_app(
                     "configured": pid in {x.id for x in c.all_providers()},
                 }
             )
-        roles = {r: c.role_ref(r) for r in ("judge", "fallback", "embed")}  # type: ignore[misc]
-        return {"providers": out, "roles": roles, "keychain": have_keychain}
+        return {"providers": out, "roles": roles_view(c), "keychain": have_keychain}
+
+    def roles_view(c: Config) -> dict[str, str | None]:
+        """Effective refs; chat is "" while it follows the Judge."""
+        roles: dict[str, str | None] = {
+            r: c.role_ref(r)  # type: ignore[arg-type]
+            for r in ("judge", "fallback", "embed")
+        }
+        roles["chat"] = c.roles.chat or ""
+        return roles
+
+    def reset_roles(c: Config, provider_id: str) -> None:
+        """Roles on a removed provider go back to the defaults (Gemma; chat follows the Judge)."""
+        for role in ("judge", "fallback", "chat", "embed"):
+            ref = getattr(c.roles, role)
+            if ref and ref.split("/", 1)[0] == provider_id:
+                setattr(c.roles, role, None)
 
     @app.get("/api/providers")
     def get_providers() -> Any:
@@ -1322,7 +1404,7 @@ def create_app(
             raise HTTPException(400, "Ollama doesn't use an API key.")
         if body.model:
             m = body.model.strip()
-            if not m or len(m) > 200 or any(ch.isspace() for ch in m):
+            if not model_name_ok(m):
                 raise HTTPException(400, "That model name doesn't look right.")
             if m not in p.models:
                 p.models.append(m)
@@ -1345,10 +1427,7 @@ def create_app(
             raise HTTPException(503, str(e)) from e
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
-        for role in ("judge", "fallback", "chat", "embed"):  # roles on it go back to Gemma
-            ref = getattr(c.roles, role)
-            if ref and ref.split("/", 1)[0] == provider_id:
-                setattr(c.roles, role, None)
+        reset_roles(c, provider_id)  # roles on it go back to Gemma
         save_cfg(c)
         return {"ok": True}
 
@@ -1358,21 +1437,20 @@ def create_app(
         c = load_config(config_path)
         base = "".join(ch if ch.isalnum() else "-" for ch in body.name.lower()).strip("-")[:24]
         pid, n = base or "custom", 2
-        taken = (
-            {p.id for p in c.all_providers()} | set(PRESETS) | {"brave-search"}
-        )  # web search key
+        taken = {p.id for p in c.all_providers()} | set(PRESETS) | RESERVED_IDS
         while pid in taken:
             pid, n = f"{base[:20]}-{n}", n + 1
+        models = clean_models([*(body.models or []), *([body.model] if body.model else [])])
         try:
             p = ProviderConfig(
                 id=pid,
                 kind="openai_compatible",
-                name=body.name.strip()[:60],
+                name=provider_name(body.name),
                 base_url=body.base_url.strip(),
-                models=[body.model.strip()] if body.model and body.model.strip() else [],
+                models=models,
             )
         except ValidationError as e:
-            raise HTTPException(400, "; ".join(str(err["msg"]) for err in e.errors())[:300]) from e
+            raise HTTPException(400, pydantic_msg(e)) from e
         if body.api_key and body.api_key.strip():
             try:
                 set_key(pid, body.api_key)
@@ -1382,20 +1460,164 @@ def create_app(
         save_cfg(c)
         return {"ok": True, "id": pid}
 
+    def provider_name(raw: str) -> str:
+        name = " ".join(raw.split())
+        if not name:
+            raise HTTPException(400, "Give the provider a name.")
+        return name[:60]
+
+    def custom_provider(c: Config, pid: str) -> ProviderConfig:
+        """A provider added with "+ Add custom provider" (not a preset, not Ollama)."""
+        for p in c.providers:
+            if p.id == pid and pid not in PRESETS and p.kind == "openai_compatible":
+                return p
+        raise HTTPException(404, f"No custom provider {pid!r}")
+
+    def stored_key(c: Config, pid: str | None, base_url: str) -> str | None:
+        """The saved key of custom provider `pid`, but only for the address it was saved
+        for: a changed host never receives the old key."""
+        if not pid:
+            return None
+        try:
+            p = custom_provider(c, pid)
+        except HTTPException:
+            return None
+        if not same_origin(p.base_url, base_url):
+            return None
+        try:
+            return get_key(p.id, p.api_key_env)
+        except SecretStoreUnavailable:
+            return None
+
+    def draft_provider(name: str, base_url: str, models: list[str], pid: str) -> ProviderConfig:
+        try:
+            return ProviderConfig(
+                id=pid,
+                kind="openai_compatible",
+                name=name,
+                base_url=base_url.strip(),
+                models=models,
+            )
+        except ValidationError as e:
+            raise HTTPException(400, pydantic_msg(e)) from e
+
+    @app.get("/api/providers/{provider_id}/models")
+    def live_models(provider_id: str) -> Any:
+        """What the provider offers right now, ticked where it's offered for roles."""
+        c = state["cfg"]
+        if provider_id in {p.id for p in c.all_providers()}:
+            p = c.provider(provider_id)
+        elif provider_id in PRESETS:
+            p = preset(provider_id)
+        else:
+            raise HTTPException(404, f"No provider {provider_id!r}")
+        if p.kind == "ollama":
+            raise HTTPException(400, "Ollama lists its own models; pull one instead.")
+        try:
+            key = get_key(p.id, p.api_key_env)
+        except SecretStoreUnavailable:
+            key = None
+        if not key and not runs_locally(p):
+            raise HTTPException(400, f"Add a {p.label} API key first.")
+        try:
+            models = fetch_models(p, key)
+        except (ModelUnavailable, ModelError) as e:
+            raise HTTPException(502, f"{p.label}: {e}") from None
+        offered = list(p.models)
+        listed = {m["id"] for m in models}
+        out = [{**m, "offered": m["id"] in offered} for m in models]
+        out += [{"id": m, "offered": True} for m in offered if m not in listed]
+        return {"models": out}
+
     @app.put("/api/providers/{provider_id}/models")
     @config_writer
-    def add_provider_model(provider_id: str, body: ModelBody) -> Any:
+    def set_provider_models(provider_id: str, body: ModelBody) -> Any:
+        """{models: [...]} replaces the offered list; {model} appends one (LM Studio, Setup)."""
         c = load_config(config_path)
         p = ensure_provider(c, provider_id)
         if p.kind == "ollama":
             raise HTTPException(400, "Ollama lists its own models; pull one instead.")
-        m = body.model.strip()
-        if not m or len(m) > 200 or any(ch.isspace() for ch in m):
-            raise HTTPException(400, "That model name doesn't look right.")
-        if m not in p.models:
-            p.models.append(m)
+        if body.models is not None:
+            p.models = clean_models(body.models)
+        else:
+            m = (body.model or "").strip()
+            if not model_name_ok(m):
+                raise HTTPException(400, "That model name doesn't look right.")
+            if m not in p.models:
+                p.models.append(m)
+        save_cfg(c)
+        return {"ok": True, "models": p.models}
+
+    @app.put("/api/providers/{provider_id}")
+    @config_writer
+    def edit_provider(provider_id: str, body: EditProvider) -> Any:
+        c = load_config(config_path)
+        old = custom_provider(c, provider_id)
+        new = draft_provider(
+            provider_name(body.name), body.base_url, clean_models(body.models), provider_id
+        )
+        new.api_key_env = old.api_key_env
+        key = (body.api_key or "").strip()
+        dropped = False
+        try:
+            if key:
+                set_key(provider_id, key)
+            elif not same_origin(old.base_url, new.base_url):
+                dropped = delete_key(provider_id)  # the old key belonged to the old host
+        except SecretStoreUnavailable as e:
+            if key or keychain_available():
+                raise HTTPException(503, str(e)) from e
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        c.providers = [new if p.id == provider_id else p for p in c.providers]
+        save_cfg(c)
+        return {"ok": True, "id": provider_id, "key_dropped": dropped}
+
+    @app.delete("/api/providers/{provider_id}")
+    @config_writer
+    def remove_provider(provider_id: str) -> Any:
+        """Remove a provider and its keychain key; roles that used it go back to the defaults."""
+        c = load_config(config_path)
+        if provider_id == "ollama":
+            raise HTTPException(400, "The built-in Ollama provider can't be removed.")
+        if provider_id not in {p.id for p in c.providers}:
+            raise HTTPException(404, f"No provider {provider_id!r}")
+        try:
+            delete_key(provider_id)
+        except SecretStoreUnavailable as e:
+            if keychain_available():  # a key may be there and we couldn't remove it
+                raise HTTPException(503, str(e)) from e
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        c.providers = [p for p in c.providers if p.id != provider_id]
+        reset_roles(c, provider_id)
         save_cfg(c)
         return {"ok": True}
+
+    @app.post("/api/providers/probe-models")
+    def probe_models(body: ProbeBody) -> Any:
+        """The custom-provider sheet's "Fetch models": list a server's models before saving."""
+        c = state["cfg"]
+        p = draft_provider("draft", body.base_url, [], "draft")
+        key = (body.api_key or "").strip() or stored_key(c, body.id, p.base_url)
+        try:
+            models = fetch_models(p, key)
+        except (ModelUnavailable, ModelError) as e:
+            raise HTTPException(502, str(e)) from None
+        return {"models": [{"id": m["id"]} for m in models]}
+
+    @app.post("/api/providers/test-draft")
+    def test_draft(body: DraftBody) -> Any:
+        """Health → Auth → Chat for the sheet's values, without saving anything."""
+        c = state["cfg"].model_copy(deep=True)
+        pid = body.id if body.id and body.id in {p.id for p in c.providers} else "draft-test"
+        if pid != "draft-test":
+            custom_provider(c, pid)  # 404 unless it's a custom provider
+        p = draft_provider(provider_name(body.name), body.base_url, clean_models(body.models), pid)
+        key = (body.api_key or "").strip() or stored_key(state["cfg"], body.id, p.base_url)
+        c.providers = [x for x in c.providers if x.id != pid] + [p]
+        steps = test_provider(c, pid, api_key=key)
+        return {"steps": [s.to_dict() for s in steps]}
 
     @app.post("/api/providers/{provider_id}/test")
     def test_provider_route(provider_id: str, body: ProviderTestBody | None = None) -> Any:
@@ -1417,6 +1639,9 @@ def create_app(
     def put_roles(body: RolesBody) -> Any:
         c = load_config(config_path)
         for role, ref in body.model_dump(exclude_none=True).items():
+            if role == "chat" and not ref.strip():
+                c.roles.chat = None  # follow the Judge
+                continue
             try:
                 pid, _model = split_ref(ref)
                 p = c.provider(pid)
@@ -1426,10 +1651,7 @@ def create_app(
                 raise HTTPException(400, "Embeddings stay on this machine.")
             setattr(c.roles, role, ref)
         save_cfg(c)
-        return {
-            "ok": True,
-            "roles": {r: state["cfg"].role_ref(r) for r in ("judge", "fallback", "embed")},
-        }  # type: ignore[misc]
+        return {"ok": True, "roles": roles_view(state["cfg"])}
 
     # -- ollama models and pull ---------------------------------------------------------------
     pulls: dict[str, dict[str, Any]] = {}
