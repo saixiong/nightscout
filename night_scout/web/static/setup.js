@@ -185,14 +185,17 @@ async function next() {
     if (k === "model" && judgeWanted() !== D.pv.roles?.judge) {
       const r = await api("PUT", "/api/roles", { judge: judgeWanted() });
       if (!r.ok) return failToast(r, "Choosing models");
-      await Promise.all([reload("pv"), NS.loadBoot()]); chrome("setup");
-      U.saved.model = true;
+      await Promise.all([reload("pv"), NS.loadBoot()]);
+      if (!U) return; // left Setup while saving
+      chrome("setup"); U.saved.model = true;
       if (U.where === "cloud") toast(`<b>Heads up:</b> judging now sends item text and project profiles to ${esc(CLOUD[U.cloud.prov][0])}.`);
     }
     if (k === "schedule" && (U.dirty.schedule || !U.rerun)) {
       const r = await api("PUT", "/api/schedule", { time: U.time, nightly: U.nightly });
       if (!r.ok) return failToast(r, "Scheduling");
-      await Promise.all([reload("sc"), NS.loadBoot()]); chrome("setup"); U.saved.schedule = true;
+      await Promise.all([reload("sc"), NS.loadBoot()]);
+      if (!U) return;
+      chrome("setup"); U.saved.schedule = true;
       const msg = r.data.message || "";
       toast(/said:|isn't supported/.test(msg) ? `<b>Schedule saved, but:</b> ${esc(msg)}` : U.nightly ? `<b>Scheduled.</b> The scout goes out every night at ${esc(U.time)}.` : "<b>Saved.</b> No nightly run.");
     }
@@ -254,7 +257,7 @@ function stepModel(head) {
     <p class="muted small mt16">Fine-tune every model role later in <a href="#/settings/providers">Settings → AI Providers</a>.</p>`;
   fx(body);
   $$(".choice", body).forEach(b => b.onclick = () => { if (U.where === b.dataset.where) return; U.where = b.dataset.where; mark(); drawBody(); });
-  $("#olCheck").onclick = async () => { U.olCheck = "now"; drawBody(); await reload("pv"); U.olCheck = null; drawBody(); drawBar(); drawRail(); };
+  $("#olCheck").onclick = async () => { U.olCheck = "now"; drawBody(); await reload("pv"); if (!U) return; U.olCheck = null; drawBody(); drawBar(); drawRail(); };
   $$("[data-pull]", body).forEach(b => b.onclick = () => pull(b.dataset.pull));
   $("#pullAll") && ($("#pullAll").onclick = () => missing.forEach(([n]) => pull(n)));
   $$("#cprov button").forEach(b => b.onclick = () => { U.cloud.prov = b.dataset.p; U.cloud.model = ""; mark(); drawBody(); });
@@ -268,6 +271,7 @@ function stepModel(head) {
     const r = await api("PUT", `/api/keys/${encodeURIComponent(U.cloud.prov)}`, { key: v, model });
     input.value = "";
     if (!r.ok) return failToast(r, "Saving keys");
+    if (!U) return;
     U.cloud.model = model; mark(); await reload("pv"); drawBody(); drawBar(); drawRail(); testCloud();
   });
 }
@@ -331,7 +335,7 @@ function stepProjects(head) {
   $$("[data-add]", body).forEach(b => b.onclick = () => add(b.dataset.add));
   $$("[data-rm]", body).forEach(b => b.onclick = async () => {
     const n = b.dataset.rm;
-    if (U.confirm !== "rm:" + n) { U.confirm = "rm:" + n; drawBody(); setTimeout(() => { if (U.confirm === "rm:" + n) { U.confirm = null; if (step() === "projects") drawBody(); } }, 4000); return; }
+    if (U.confirm !== "rm:" + n) { askAgain("rm:" + n); return; }
     U.confirm = null;
     const wasProfiled = projRows().find(p => p.name === n)?.profiled;
     const r = await api("DELETE", `/api/projects/${encodeURIComponent(n)}`);
@@ -341,10 +345,15 @@ function stepProjects(head) {
   });
   $$("[data-reread]", body).forEach(b => b.onclick = () => {
     const n = b.dataset.reread;
-    if (U.confirm !== "re:" + n) { U.confirm = "re:" + n; drawBody(); return; }
+    if (U.confirm !== "re:" + n) { askAgain("re:" + n); return; }
     U.confirm = null; readProjects([n]);
   });
   $("#readAll") && ($("#readAll").onclick = () => readProjects(unread.map(p => p.name)));
+}
+// Two-click buttons: the first click asks, the second within 4 s acts.
+function askAgain(key) {
+  U.confirm = key; drawBody();
+  setTimeout(() => { if (U && U.confirm === key) { U.confirm = null; if (step() === "projects") drawBody(); } }, 4000);
 }
 async function readProjects(names) {
   let done = 0;
