@@ -648,3 +648,8 @@ pre.plist { font-family: var(--mono); font-size: 11.5px; color: #cfd8f0; backgro
   .clist li { grid-template-columns: 22px 1fr; } .clist .r { grid-column: 2; }
 }
 @media (min-width: 761px) { .strip-cap { display: none; } }
+/* setup → model: the provider picker (same list as Settings → AI Providers) */
+.provpick { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.provseg { flex-wrap: wrap; }
+.provseg button small { font-weight: 500; opacity: .7; margin-left: 3px; }
+.provseg button:disabled { cursor: not-allowed; opacity: .45; }

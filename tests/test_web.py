@@ -557,13 +557,23 @@ def test_provider_test_route(env, monkeypatch) -> None:
         def to_dict(self) -> dict:
             return {"name": self.name, "ok": True, "detail": ""}
 
-    monkeypatch.setattr(
-        web, "test_provider", lambda cfg, pid: [Step("Health"), Step("Auth"), Step("Chat")]
-    )
+    seen: list[str | None] = []
+
+    def fake(cfg, pid, model=None):
+        seen.append(model)
+        return [Step("Health"), Step("Auth"), Step("Chat")]
+
+    monkeypatch.setattr(web, "test_provider", fake)
     steps = client.post("/api/providers/ollama/test").json()["steps"]
     assert [s["name"] for s in steps] == ["Health", "Auth", "Chat"]
     assert client.post("/api/providers/lmstudio/test").status_code == 200  # preset, not added yet
     assert client.post("/api/providers/nope/test").status_code == 404
+    # Setup tests the exact model you picked, not the provider's first one
+    r = client.post("/api/providers/openai/test", json={"model": "gpt-5-mini"})
+    assert r.status_code == 200 and seen[-1] == "gpt-5-mini"
+    assert client.post("/api/providers/openai/test", json={}).status_code == 200
+    assert seen[-1] is None
+    assert client.post("/api/providers/openai/test", json={"model": "a b"}).status_code == 400
 
 
 def test_ollama_pull_progress(env, monkeypatch) -> None:

@@ -15,7 +15,6 @@ const STEPS = [
   ["schedule", "Schedule", "When it goes out"],
   ["finish", "Finish", "First run"],
 ];
-const CLOUD = { openrouter: ["OpenRouter", "⇄", "google/gemma-3-27b-it"], openai: ["OpenAI", "◎", "a model id from platform.openai.com/docs/models"] };
 const TYPE = { youtube: "YouTube channels", rss: "RSS / Atom feeds", hackernews: "Hacker News", reddit: "Reddit", bluesky: "Bluesky", mastodon: "Mastodon", github: "GitHub" };
 const ADD = [
   { k: "website", icon: "rss", name: "Website or blog", hint: "finds its RSS feed", ph: "https://example.com", discover: 1 },
@@ -53,11 +52,14 @@ const reload = async (...keys) => {
 };
 function freshState() {
   const rerun = !D.setup.needed, j = B().judge || {};
-  const pid = String(j.ref || "").split("/")[0];
+  const pid = String(j.ref || "").split("/")[0] || "ollama";
+  const where = j.local === false ? "cloud" : "local";
+  const known = pid === "ollama" || !!pv(pid) || presets().some(c => c.id === pid && !c.soon);
   U = {
-    rerun, step: 0, reached: rerun ? 5 : 0, dirty: {}, saved: {}, busy: false,
-    where: j.local === false ? "cloud" : "local",
-    cloud: { prov: CLOUD[pid] ? pid : "openrouter", model: j.local === false ? j.model : "", test: null },
+    rerun, step: 0, reached: rerun ? 5 : 0, dirty: {}, saved: {}, busy: false, where,
+    // the provider picked under each choice; "new" is the add-a-server form
+    pick: { local: where === "local" && known ? pid : "ollama", cloud: where === "cloud" && known ? pid : "openai" },
+    models: pid !== "ollama" && j.model ? { [pid]: j.model } : {}, tested: {},
     pulls: {}, olCheck: null, confirm: null, readQ: null, ipj: 0, addType: "website",
     time: D.sc.time, nightly: rerun ? D.sc.installed !== false : true, plist: false, go: "now",
   };
@@ -73,16 +75,39 @@ const ollama = () => D.pv.providers.find(p => p.id === "ollama");
 const NEED = () => [[B().model.name, "Judge · Research"], [B().model.fallback, "Fallback"], [B().model.embed, "Embeddings"]];
 const have = n => (ollama()?.models || []).some(m => m.name === n || m.name === `${n}:latest`);
 const sizeOf = n => (ollama()?.models || []).find(m => m.name === n)?.size || "";
-const cloudProv = () => D.pv.providers.find(p => p.id === U.cloud.prov);
-const cloudModel = () => U.cloud.model || cloudProv()?.models?.[0]?.name || "";
-const judgeWanted = () => U.where === "local" ? `ollama/${B().model.name}` : `${U.cloud.prov}/${cloudModel()}`;
 const olUp = () => ollama()?.status === "connected";
+// Same provider list as Settings → AI Providers: Ollama, LM Studio, any OpenAI-compatible
+// server, and the cloud presets (OpenAI, OpenRouter; Anthropic and Gemini marked "soon").
+const presets = () => NS.CLOUD || [];
+const pv = id => D.pv.providers.find(p => p.id === id);
+const isPreset = id => presets().some(c => c.id === id);
+const customs = () => D.pv.providers.filter(p => !["ollama", "lmstudio"].includes(p.id) && !isPreset(p.id));
+function provOptions(where) {
+  const mine = customs().filter(p => (p.local !== false) === (where === "local")).map(p => ({ id: p.id, name: p.name, tile: "⚙" }));
+  return where === "local"
+    ? [{ id: "ollama", name: "Ollama", tile: "🦙" }, { id: "lmstudio", name: "LM Studio", tile: "LM" }, ...mine, { id: "new", name: "Other server", tile: "+" }]
+    : [...presets(), ...mine, { id: "new", name: "Other endpoint", tile: "+" }];
+}
+const cur = () => U.pick[U.where];
+const curName = () => pv(cur())?.name || presets().find(c => c.id === cur())?.name || cur();
+const curModel = () => U.models[cur()] || pv(cur())?.models?.[0]?.name || "";
+const curSaved = () => (pv(cur())?.models || []).some(m => m.name === curModel());
+const needsKey = () => isPreset(cur());
+const leaves = () => cur() !== "ollama" && cur() !== "new" && (pv(cur()) ? pv(cur()).local === false : isPreset(cur()));
+const judgeWanted = () => cur() === "ollama" ? `ollama/${B().model.name}` : `${cur()}/${curModel()}`;
+const keptJudge = () => U.rerun && judgeWanted() === D.pv.roles?.judge; // unchanged on a re-run: no re-test needed
 
 /* ---------- summaries and gates ---------- */
 const projRows = () => D.setup.projects;
 const profiles = () => D.pj.projects;
 function summary(k) {
-  if (k === "model") return U.where === "local" ? (olUp() && NEED().every(([n]) => have(n)) ? `${B().model.name} · on this machine` : "Ollama · models to pull") : (cloudProv()?.key?.configured ? `${CLOUD[U.cloud.prov][0]} · leaves this machine` : "Cloud · key needed");
+  if (k === "model") {
+    if (cur() === "ollama") return olUp() && NEED().every(([n]) => have(n)) ? `${B().model.name} · on this machine` : "Ollama · models to pull";
+    if (cur() === "new") return "Add a server";
+    if (!curModel() || !curSaved()) return `${curName()} · model needed`;
+    if (needsKey() && !pv(cur())?.key?.configured) return `${curName()} · key needed`;
+    return `${curName()} · ${leaves() ? "leaves this machine" : "on this machine"}`;
+  }
   if (k === "projects") return projRows().length ? projRows().map(p => p.name).join(", ") : "None yet";
   if (k === "sources") { const c = D.src.catalog; return `${c.filter(x => x.enabled !== false).length} of ${c.length} on`; }
   if (k === "interests") { const n = profiles().reduce((a, p) => a + p.interests.length, 0); return profiles().length ? `${n} interests · ${profiles().length} project${profiles().length > 1 ? "s" : ""}` : "Needs a project first"; }
@@ -92,13 +117,26 @@ function summary(k) {
 function canNext() {
   const k = step();
   if (U.busy) return false;
-  if (k === "model") return U.where === "local" ? olUp() && NEED().every(([n]) => have(n)) : !!(cloudProv()?.key?.configured && cloudModel() && olUp() && have(B().model.embed));
+  if (k === "model") {
+    if (cur() === "ollama") return olUp() && NEED().every(([n]) => have(n));
+    if (cur() === "new" || !curModel() || !curSaved() || !(olUp() && have(B().model.embed))) return false;
+    if (needsKey() && !pv(cur())?.key?.configured) return false;
+    return U.tested[judgeWanted()] === true || keptJudge();
+  }
   if (k === "projects") return projRows().some(p => p.profiled) && projRows().every(p => p.profiled || !p.exists) && !U.readQ;
   return true;
 }
 function blockHint() {
   const k = step();
-  if (k === "model") return !olUp() ? "Start Ollama, then press Check." : U.where === "local" ? "Pull the models to continue." : "Save a key and pull the embeddings model.";
+  if (k === "model") {
+    if (!olUp()) return cur() === "ollama" ? "Start Ollama, then press Check." : "Embeddings run in Ollama: start it, then press Check.";
+    if (cur() === "ollama") return "Pull the models to continue.";
+    if (!have(B().model.embed)) return "Pull the embeddings model to continue.";
+    if (cur() === "new") return "Add the server to continue.";
+    if (needsKey() && !pv(cur())?.key?.configured) return "Save a key to continue.";
+    if (!curModel() || !curSaved()) return "Pick the model to judge with.";
+    return U.tested[judgeWanted()] === false ? "The test failed: fix it and test again." : "Test the connection to continue.";
+  }
   if (k === "projects") return U.readQ ? "Gemma is reading…" : projRows().length ? "Let Gemma read your projects to continue." : "Add a project to continue.";
   return "";
 }
@@ -188,7 +226,7 @@ async function next() {
       await Promise.all([reload("pv"), NS.loadBoot()]);
       if (!U) return; // left Setup while saving
       chrome("setup"); U.saved.model = true;
-      if (U.where === "cloud") toast(`<b>Heads up:</b> judging now sends item text and project profiles to ${esc(CLOUD[U.cloud.prov][0])}.`);
+      if (leaves()) toast(`<b>Heads up:</b> judging now sends item text and project profiles to ${esc(curName())}.`);
     }
     if (k === "schedule" && (U.dirty.schedule || !U.rerun)) {
       const r = await api("PUT", "/api/schedule", { time: U.time, nightly: U.nightly });
@@ -229,61 +267,110 @@ function stepModel(head) {
   const body = $("#sbody"); const ol = ollama();
   const missing = NEED().filter(([n]) => !have(n) && !U.pulls[n]);
   const olCard = `<section class="pcard prov"><div class="prow"><span class="tile">🦙</span><div class="pmain"><div class="pname">Ollama <span class="badge local">Local</span>${olUp() ? `<span class="badge ok">Connected</span>` : U.olCheck === "now" ? `<span class="badge off">Checking…</span>` : `<span class="badge off">Not running</span>`}</div>
-      <div class="muted small mono">${esc(ol?.base_url || B().model.host)}${ol?.version ? ` · ollama ${esc(ol.version)}` : ""}</div></div>
+      <div class="muted small mono">${esc(ol?.base_url || B().model.host)}${ol?.version ? ` · ollama ${esc(ol.version)}` : ""}${cur() === "ollama" ? "" : " · embeddings stay on this machine"}</div></div>
       <button class="btn ghost" id="olCheck">${olUp() ? "Check again" : "Check"}</button></div>
     ${olUp() ? "" : `<p class="muted small m-8">Not installed? Get it from <a href="https://ollama.com/download" target="_blank" rel="noopener noreferrer">ollama.com/download</a>, open it, then press Check.</p>`}
-    ${olUp() ? `<ul class="clist">${modelRows(U.where === "local" ? NEED() : NEED().slice(2))}</ul>` : ""}
-    ${olUp() && U.where === "local" && missing.length > 1 ? `<div class="row"><button class="btn" id="pullAll">Pull all ${missing.length}</button><span class="muted small">Several GB; it can take a while. You can leave this page open.</span></div>` : ""}
+    ${olUp() ? `<ul class="clist">${modelRows(cur() === "ollama" ? NEED() : NEED().slice(2))}</ul>` : ""}
+    ${olUp() && cur() === "ollama" && missing.length > 1 ? `<div class="row"><button class="btn" id="pullAll">Pull all ${missing.length}</button><span class="muted small">Several GB; it can take a while. You can leave this page open.</span></div>` : ""}
   </section>`;
-  const cp = cloudProv(), [cname, ctile, cph] = CLOUD[U.cloud.prov], key = cp?.key?.configured ? cp.key : null;
-  const cloudCard = `<section class="pcard prov"><div class="prow"><span class="tile">${ctile}</span><div class="pmain">
-      <div class="pname">${esc(cname)} ${key ? `<span class="badge ok">Configured</span>` : `<span class="badge off">Not configured</span>`}</div>
-      <div class="muted small">Anthropic and Gemini get native clients after the contest; OpenRouter reaches many of the same models today.</div></div>
-      <div class="seg" id="cprov">${Object.entries(CLOUD).map(([id, [n]]) => `<button data-p="${id}" class="${U.cloud.prov === id ? "on" : ""}">${esc(n)}</button>`).join("")}</div></div>
-    ${key ? `<div class="small mt10"><span class="keypill mono">${esc(key.masked)}</span> <span class="muted">${key.source === "env" ? "from an environment variable" : `🔒 in ${esc(keychain())}`}</span></div>
-       <div class="addrow"><input type="text" id="cModel" value="${esc(cloudModel())}" placeholder="Model for judging, e.g. ${esc(cph)}" autocomplete="off"><button class="btn ghost" id="cTest">Test</button></div>
-       <div id="cTestOut" class="mt10"></div>`
-      : `<div class="keyform"><div class="keyin"><input type="password" id="keyVal" placeholder="Paste your ${esc(cname)} API key" autocomplete="off"><button class="eye" id="eye" title="Show">👁</button></div>
-       <input type="text" id="keyModel" placeholder="Model for judging, e.g. ${esc(cph)}" autocomplete="off">
-       <div class="row mt0"><button class="btn primary" id="keySave">Save to ${esc(keychain())} &amp; test</button><span class="muted small">Never written to config.yaml, the logs or the sandbox.</span></div></div>`}
-  </section>
-  <div class="supply mt12"><strong>Leaves this machine:</strong> item text and your project profiles go to ${esc(cname)} for judging. Embeddings stay local, so Ollama with <span class="mono">${esc(B().model.embed)}</span> is still needed.</div>`;
-  body.innerHTML = head("Where should Gemma <em>think?</em>", "Night Scout reads every item against your projects with a language model. Local is free and private; a cloud model can be faster on a small machine.") + `
+  const opts = provOptions(U.where);
+  const seg = `<div class="seg provseg" id="cprov">${opts.map(o => `<button data-p="${esc(o.id)}" class="${cur() === o.id ? "on" : ""}" ${o.soon ? "disabled" : ""}>${esc(o.name)}${o.soon ? ` <small>soon</small>` : ""}</button>`).join("")}</div>`;
+  const soon = U.where === "cloud" ? `<p class="muted small mt10">Anthropic and Google Gemini get native clients after the contest; OpenRouter reaches their models today.</p>` : "";
+  body.innerHTML = head("Where should Gemma <em>think?</em>", "Night Scout reads every item with a language model. Local is free and private; a cloud model can be faster on a small machine.") + `
     <div class="choices">
-      <button class="choice ${U.where === "local" ? "on" : ""}" data-where="local"><span class="tile">🦙</span><b>On ${here()} <span class="rec">RECOMMENDED</span></b><small>Ollama runs Gemma locally. Nothing leaves your machine.</small><span class="pros">free · private · works offline</span></button>
-      <button class="choice ${U.where === "cloud" ? "on" : ""}" data-where="cloud"><span class="tile">↗</span><b>Cloud provider</b><small>Use an OpenRouter or OpenAI key. Item text is sent to them.</small><span class="pros">no big download · pay per use</span></button>
+      <button class="choice ${U.where === "local" ? "on" : ""}" data-where="local"><span class="tile">🦙</span><b>On ${here()} <span class="rec">RECOMMENDED</span></b><small>Ollama, LM Studio or another local server. Nothing leaves your machine.</small><span class="pros">free · private · works offline</span></button>
+      <button class="choice ${U.where === "cloud" ? "on" : ""}" data-where="cloud"><span class="tile">↗</span><b>Cloud provider</b><small>OpenAI, OpenRouter or any OpenAI-compatible endpoint. Item text is sent to them.</small><span class="pros">no big download · pay per use</span></button>
     </div>
-    ${U.where === "local" ? olCard : cloudCard + olCard}
+    <div class="provpick mt12"><span class="muted small">Provider</span>${seg}</div>${soon}
+    ${cur() === "ollama" ? olCard : provCard() + olCard}
     <p class="muted small mt16">Fine-tune every model role later in <a href="#/settings/providers">Settings → AI Providers</a>.</p>`;
   fx(body);
   $$(".choice", body).forEach(b => b.onclick = () => { if (U.where === b.dataset.where) return; U.where = b.dataset.where; mark(); drawBody(); });
+  $$("#cprov button", body).forEach(b => b.onclick = () => { if (b.disabled || cur() === b.dataset.p) return; U.pick[U.where] = b.dataset.p; mark(); drawBody(); });
   $("#olCheck").onclick = async () => { U.olCheck = "now"; drawBody(); await reload("pv"); if (!U) return; U.olCheck = null; drawBody(); drawBar(); drawRail(); };
   $$("[data-pull]", body).forEach(b => b.onclick = () => pull(b.dataset.pull));
   $("#pullAll") && ($("#pullAll").onclick = () => missing.forEach(([n]) => pull(n)));
-  $$("#cprov button").forEach(b => b.onclick = () => { U.cloud.prov = b.dataset.p; U.cloud.model = ""; mark(); drawBody(); });
-  $("#eye") && ($("#eye").onclick = () => { const i = $("#keyVal"); i.type = i.type === "password" ? "text" : "password"; });
-  $("#cModel") && ($("#cModel").onchange = e => { U.cloud.model = e.target.value.trim(); mark(); });
-  $("#cTest") && ($("#cTest").onclick = () => testCloud());
-  $("#keySave") && ($("#keySave").onclick = async () => {
+  if (cur() !== "ollama") wireProvCard();
+}
+/* The card for the picked non-Ollama provider: key (cloud presets), model, test. */
+function provCard() {
+  const id = cur(), p = pv(id), pre = presets().find(c => c.id === id);
+  if (id === "new") return `<section class="pcard prov"><p class="eyebrow">Any OpenAI-compatible server</p>
+    <p class="muted small">${U.where === "local" ? "llama.cpp server, vLLM, Jan, LocalAI or similar on this machine or your network." : "A hosted endpoint that speaks the OpenAI API (Together, Groq, Fireworks, your own gateway…)."}</p>
+    <div class="fgrid"><label>Name<input type="text" id="nName" placeholder="${U.where === "local" ? "llama.cpp on the Windows box" : "My gateway"}" autocomplete="off"></label>
+      <label>Base URL<input type="text" id="nUrl" placeholder="${U.where === "local" ? "http://127.0.0.1:8080/v1" : "https://api.example.com/v1"}" autocomplete="off"></label>
+      <label>API key <span class="muted">(optional, stored in the ${esc(keychain())})</span><input type="password" id="nKey" placeholder="sk-…" autocomplete="off"></label>
+      <label>Model<input type="text" id="nModel" placeholder="gemma-4-12b-it" autocomplete="off"></label></div>
+    <div class="row"><button class="btn primary" id="nSave">Add &amp; test</button></div></section>`;
+  const key = p?.key?.configured ? p.key : null, wantKey = !!pre && (!key || U.keyOpen === id);
+  const name = curName(), ph = pre?.ph || (id === "lmstudio" ? "the model loaded in LM Studio, e.g. google/gemma-3-12b" : "e.g. gemma-4-12b-it");
+  const status = id === "lmstudio" || !pre ? (p?.status === "connected" ? `<span class="badge ok">Connected</span>` : p?.status === "offline" ? `<span class="badge off">Not running</span>` : `<span class="badge off">Not checked</span>`)
+    : key ? `<span class="badge ok">Configured</span>` : `<span class="badge off">Not configured</span>`;
+  const url = p?.base_url || (id === "lmstudio" ? "http://127.0.0.1:1234/v1" : "");
+  return `<section class="pcard prov"><div class="prow"><span class="tile">${esc(pre?.tile || (id === "lmstudio" ? "LM" : "⚙"))}</span><div class="pmain">
+      <div class="pname">${esc(name)} ${leaves() ? "" : `<span class="badge local">Local</span>`}${status}</div>
+      <div class="muted small mono">${esc(url)}${id === "lmstudio" ? " · OpenAI-compatible" : ""}</div></div>
+      ${key && pre && !wantKey ? `<button class="btn ghost" id="keyNew">Use a different key</button>` : ""}</div>
+    ${key && !wantKey ? `<div class="small mt10"><span class="keypill mono">${esc(key.masked)}</span> <span class="muted">${key.source === "env" ? `from <code>${esc(pre?.env || "an environment variable")}</code>` : `🔒 in ${esc(keychain())}`}</span></div>` : ""}
+    ${wantKey ? `<div class="keyform"><div class="keyin"><input type="password" id="keyVal" placeholder="Paste your ${esc(name)} API key" autocomplete="off"><button class="eye" id="eye" title="Show">👁</button></div>
+       <input type="text" id="keyModel" value="${esc(curModel())}" placeholder="Model for judging: ${esc(ph)}" autocomplete="off">
+       <div class="small muted">${pre.url ? `<a ${NS.ext(pre.url)}>Get a key →</a> · ` : ""}Or set <code>${esc(pre.env)}</code>.</div>
+       <div class="row mt0"><button class="btn primary" id="keySave">Save to ${esc(keychain())} &amp; test</button>${key ? `<button class="btn ghost" id="keyCancel">Cancel</button>` : ""}<span class="muted small">Never written to config.yaml, the logs or the sandbox.</span></div></div>`
+    : `<div class="addrow"><input type="text" id="cModel" value="${esc(curModel())}" placeholder="Model for judging: ${esc(ph)}" autocomplete="off"><button class="btn ghost" id="cTest">${curSaved() ? "Test" : "Use &amp; test"}</button></div>`}
+    <div id="cTestOut" class="mt10"></div>
+  </section>
+  ${leaves() ? `<div class="supply mt12"><strong>Leaves this machine:</strong> item text and your project profiles go to ${esc(name)} for judging. Embeddings stay local, so Ollama with <span class="mono">${esc(B().model.embed)}</span> is still needed.</div>`
+    : `<div class="supply mt12">Embeddings for the pre-filter run in Ollama with <span class="mono">${esc(B().model.embed)}</span>, so Ollama is still needed.</div>`}`;
+}
+function wireProvCard() {
+  const body = $("#sbody"), id = cur();
+  $("#eye", body) && ($("#eye", body).onclick = () => { const i = $("#keyVal"); i.type = i.type === "password" ? "text" : "password"; });
+  $("#keyNew", body) && ($("#keyNew", body).onclick = () => { U.keyOpen = id; drawBody(); $("#keyVal")?.focus(); });
+  $("#keyCancel", body) && ($("#keyCancel", body).onclick = () => { U.keyOpen = null; drawBody(); });
+  $("#cModel", body) && ($("#cModel", body).oninput = e => { U.models[id] = e.target.value.trim(); mark(); drawBar(); drawRail(); const t = $("#cTest"); if (t) t.textContent = curSaved() ? "Test" : "Use & test"; });
+  $("#cTest", body) && ($("#cTest", body).onclick = async () => {
+    const m = curModel(); if (!m) return $("#cModel").focus();
+    if (!curSaved()) {
+      const r = await api("PUT", `/api/providers/${encodeURIComponent(id)}/models`, { model: m });
+      if (!r.ok) return failToast(r, "Choosing models");
+      await reload("pv"); if (!U || cur() !== id) return; drawBody(); drawRail();
+    }
+    testProv();
+  });
+  $("#keySave", body) && ($("#keySave", body).onclick = async () => {
     const input = $("#keyVal"), v = input.value.trim(), model = $("#keyModel").value.trim();
     if (v.length < 12) return toast("That doesn't look like an API key.");
     if (!model) return toast("Add the model to judge with, too.");
-    const r = await api("PUT", `/api/keys/${encodeURIComponent(U.cloud.prov)}`, { key: v, model });
+    const r = await api("PUT", `/api/keys/${encodeURIComponent(id)}`, { key: v, model });
     input.value = "";
     if (!r.ok) return failToast(r, "Saving keys");
     if (!U) return;
-    U.cloud.model = model; mark(); await reload("pv"); drawBody(); drawBar(); drawRail(); testCloud();
+    U.models[id] = model; U.keyOpen = null; mark(); await reload("pv"); if (!U || cur() !== id) return; drawBody(); drawBar(); drawRail(); testProv();
+  });
+  $("#nSave", body) && ($("#nSave", body).onclick = async () => {
+    const nb = { name: $("#nName").value.trim(), base_url: $("#nUrl").value.trim(), api_key: $("#nKey").value, model: $("#nModel").value.trim() };
+    if (!nb.name || !/^https?:\/\//i.test(nb.base_url)) return toast("Give it a name and an http(s) base URL.");
+    if (!nb.model) return toast("Add the model to judge with, too.");
+    const r = await api("POST", "/api/providers", nb);
+    $("#nKey").value = "";
+    if (!r.ok) return failToast(r, "Adding providers");
+    await reload("pv"); if (!U) return;
+    const np = pv(r.data.id); U.where = np && np.local === false ? "cloud" : "local"; // a LAN URL lands under "On this machine"
+    U.pick[U.where] = r.data.id; U.models[r.data.id] = nb.model; mark(); drawBody(); drawBar(); drawRail(); testProv();
   });
 }
-async function testCloud() {
-  const out = $("#cTestOut"); if (!out) return;
+async function testProv() {
+  const out = $("#cTestOut"); if (!out || !U) return;
+  const id = cur(), ref = judgeWanted();
   out.innerHTML = `<div class="checks"><span class="now">◌ Health</span><span>○ Auth</span><span>○ Chat</span></div>`;
-  const r = await api("POST", `/api/providers/${encodeURIComponent(U.cloud.prov)}/test`, {});
-  if (!r.ok) { out.innerHTML = ""; return failToast(r, "Testing providers"); }
+  const r = await api("POST", `/api/providers/${encodeURIComponent(id)}/test`, { model: curModel() });
+  if (!U) return;
+  if (!r.ok) { const o = $("#cTestOut"); if (o) o.innerHTML = ""; return failToast(r, "Testing providers"); }
   const steps = r.data?.steps || [], failed = steps.find(s => !s.ok);
-  if (!$("#cTestOut")) return;
+  U.tested[ref] = !failed; drawBar(); drawRail();
+  if (!$("#cTestOut") || cur() !== id) return;
   $("#cTestOut").innerHTML = `<div class="checks">${steps.map(s => `<span class="${s.ok ? "good" : "bad"}">${s.ok ? "✓" : "✕"} ${esc(s.name)}</span>`).join("")}</div>` +
-    (failed ? `<p class="small neg testmsg">Test failed at ${esc(failed.name)}: ${esc(failed.detail || "")}</p>` : `<p class="small testmsg good">Connection test passed.</p>`);
+    (failed ? `<p class="small neg testmsg">Test failed at ${esc(failed.name)}: ${esc(failed.detail || "")}</p>` : `<p class="small testmsg good">Connection test passed.${steps.at(-1)?.detail ? " " + esc(steps.at(-1).detail) : ""}</p>`);
 }
 async function pull(n) {
   if (!U || U.pulls[n]) return;

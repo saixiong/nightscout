@@ -128,6 +128,10 @@ class ModelBody(BaseModel):
     model: str
 
 
+class ProviderTestBody(BaseModel):
+    model: str | None = None  # test this model rather than the provider's first one
+
+
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
 
 
@@ -1227,15 +1231,18 @@ def create_app(
         return {"ok": True}
 
     @app.post("/api/providers/{provider_id}/test")
-    def test_provider_route(provider_id: str) -> Any:
+    def test_provider_route(provider_id: str, body: ProviderTestBody | None = None) -> Any:
         c = state["cfg"]
+        model = (body.model or "").strip() if body else ""
+        if model and (len(model) > 200 or any(ch.isspace() for ch in model)):
+            raise HTTPException(400, "That model name doesn't look right.")
         known = {p.id for p in c.all_providers()}
         if provider_id not in known and provider_id not in PRESETS:
             raise HTTPException(404, f"No provider {provider_id!r}")
         if provider_id not in known:  # e.g. LM Studio before it's added: test the preset
             c = c.model_copy(deep=True)
             c.providers.append(preset(provider_id))
-        steps = test_provider(c, provider_id)
+        steps = test_provider(c, provider_id, model=model or None)
         return {"steps": [s.to_dict() for s in steps]}
 
     @app.put("/api/roles")

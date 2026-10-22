@@ -95,6 +95,7 @@ const CLOUD = [
   { id: "anthropic", name: "Anthropic", tile: "A", soon: true },
   { id: "google", name: "Google Gemini", tile: "G", soon: true },
 ];
+NS.CLOUD = CLOUD; // Setup's Model step offers the same list
 const ROLES = [
   ["judge", "Judge items & write briefs", "Scores every item for every project, proposes actions, writes research briefs."],
   ["fallback", "Fallback judge", "Used if the main model fails or times out."],
