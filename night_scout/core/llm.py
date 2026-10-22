@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass, field
 from typing import Any, Protocol, TypeVar
 
 import httpx
@@ -38,6 +39,64 @@ class LLM(Protocol):
     def embed(self, texts: list[str]) -> list[list[float]]: ...
 
     def has_embed_model(self) -> bool: ...
+
+
+@dataclass
+class ToolCall:
+    """One function call the model asked for. `id` is empty when the server doesn't send one."""
+
+    name: str
+    arguments: dict[str, Any]
+    id: str = ""
+
+
+@dataclass
+class ToolReply:
+    """A tool-calling chat turn, the same shape for every provider."""
+
+    content: str
+    tool_calls: list[ToolCall] = field(default_factory=list)
+
+
+class ToolChat(Protocol):
+    """Clients that can run a multi-turn chat with tools (the chat drawer).
+
+    Messages are provider-neutral dicts: {"role": "system"|"user"|"assistant"|"tool",
+    "content": str}, plus "tool_calls": [ToolCall] on assistant turns and "tool_call_id" /
+    "name" on tool results. `tools` are OpenAI-style function specs.
+    """
+
+    model_name: str
+
+    def chat_tools(
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]
+    ) -> ToolReply: ...
+
+
+def _arguments(raw: Any) -> dict[str, Any]:
+    """Tool arguments arrive as a dict (Ollama) or a JSON string (OpenAI); garbage → {}."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw) if raw.strip() else {}
+        except json.JSONDecodeError:
+            return {}
+    return dict(raw) if isinstance(raw, dict) else {}
+
+
+def _parse_tool_calls(raw: Any) -> list[ToolCall]:
+    out: list[ToolCall] = []
+    for tc in raw if isinstance(raw, list) else []:
+        fn = tc.get("function") if isinstance(tc, dict) else None
+        if not isinstance(fn, dict) or not fn.get("name"):
+            continue
+        out.append(
+            ToolCall(
+                name=str(fn["name"]),
+                arguments=_arguments(fn.get("arguments")),
+                id=str(tc.get("id") or ""),
+            )
+        )
+    return out
 
 
 class OllamaClient:
@@ -186,6 +245,42 @@ class OllamaClient:
             raise ModelError("empty response")
         return text
 
+    def chat_tools(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> ToolReply:
+        """One turn of a chat with tools over /api/chat. Thinking stays off: Gemma returns
+        empty answers with it on. A bigger context than judging: tool results are long."""
+        model = self.ensure_ready()
+        body: dict[str, Any] = {
+            "model": model,
+            "messages": [_ollama_message(m) for m in messages],
+            "stream": False,
+            "keep_alive": self.cfg.keep_alive,
+            "think": False,
+            "options": {"temperature": 0.3, "num_ctx": 16384, "num_predict": 1200},
+        }
+        if tools:
+            body["tools"] = tools
+        self.calls += 1
+        try:
+            resp = self._http.post("/api/chat", json=body)
+        except (httpx.ConnectError, httpx.ConnectTimeout) as e:
+            raise ModelUnavailable(f"Ollama not reachable at {self.cfg.host}") from e
+        except httpx.HTTPError as e:
+            raise ModelError(f"Ollama request failed: {type(e).__name__}") from e
+        if resp.status_code >= 400:
+            if model != self.cfg.fallback and self.cfg.fallback and resp.status_code >= 500:
+                log.warning(
+                    "%s failed (%s); switching to %s", model, resp.status_code, self.cfg.fallback
+                )
+                self.model_name = self.cfg.fallback
+            raise ModelError(f"Ollama HTTP {resp.status_code}: {resp.text[:200]}")
+        try:
+            msg = resp.json()["message"]
+            content = str(msg.get("content") or "")
+            calls = _parse_tool_calls(msg.get("tool_calls"))
+        except (ValueError, KeyError, TypeError, AttributeError) as e:
+            raise ModelError("unexpected Ollama response shape") from e
+        return ToolReply(content=content, tool_calls=calls)
+
     def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
@@ -205,6 +300,23 @@ class OllamaClient:
                 raise ModelError("embedding count mismatch")
             out.extend(vecs)
         return out
+
+
+def _ollama_message(m: dict[str, Any]) -> dict[str, Any]:
+    """A provider-neutral chat message in Ollama's /api/chat shape."""
+    role = m["role"]
+    if role == "tool":
+        return {
+            "role": "tool",
+            "content": str(m.get("content") or ""),
+            "tool_name": m.get("name", ""),
+        }
+    out: dict[str, Any] = {"role": role, "content": str(m.get("content") or "")}
+    if role == "assistant" and m.get("tool_calls"):
+        out["tool_calls"] = [
+            {"function": {"name": tc.name, "arguments": tc.arguments}} for tc in m["tool_calls"]
+        ]
+    return out
 
 
 def _with_schema_hint(

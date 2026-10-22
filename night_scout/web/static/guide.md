@@ -50,6 +50,14 @@ Night Scout only uses official feeds and public APIs. No logins, no scraping.
 - **Hacker News, Reddit, Bluesky, Mastodon, GitHub, arXiv, dev.to**: lists, keywords, subreddits, hashtags, releases and repo searches.
 - **X (Twitter)** isn't supported. X has no free public API and its terms don't allow scraping. Many of the same people also post on Bluesky or Mastodon.
 
+# Asking Gemma
+
+**✦ Ask** opens a chat drawer about the day's Digest or one story. Gemma looks things up before it answers: it can search everything the scout fetched that night, read a web page, pull a YouTube transcript and search Hacker News. Each lookup shows up in the drawer as it happens; click one to see what came back. Answers link the pages they used and say plainly when something couldn't be checked.
+
+Web search is optional and off by default. Turn it on in **Settings → Chat & search** with your own SearXNG instance (no key; enable JSON output in its `settings.yml`) or a Brave Search API key, which is kept in your system keychain. Only Gemma's search words go to that service.
+
+Pages are fetched from your machine, only from public addresses, and only when Gemma asks. What they say is treated as information, never as instructions. One answer uses at most five lookups.
+
 # Models and providers
 
 By default everything runs on **Ollama** on your machine: Gemma 4 12B judges items and writes briefs, Gemma 4 E4B is the fallback, and EmbeddingGemma finds near-duplicates. Settings → Providers shows each model role and which model fills it.

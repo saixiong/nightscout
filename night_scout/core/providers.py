@@ -28,6 +28,8 @@ from .llm import (
     ModelError,
     ModelUnavailable,
     OllamaClient,
+    ToolReply,
+    _parse_tool_calls,
     _short_error,
     _strip_fences,
     _with_schema_hint,
@@ -278,6 +280,30 @@ class OpenAICompatClient:
             raise ModelError("empty response")
         return text
 
+    def chat_tools(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> ToolReply:
+        """One turn of a chat with tools over /chat/completions."""
+        body: dict[str, Any] = {
+            "model": self.model_name,
+            "messages": [_openai_message(m) for m in messages],
+            "stream": False,
+            "temperature": 0.3,
+            "max_tokens": 1200,
+        }
+        if tools:
+            body["tools"] = tools
+        self.calls += 1
+        resp = self._request("POST", "/chat/completions", json=body)
+        self._check(resp, self.model_name)
+        try:
+            msg = resp.json()["choices"][0]["message"]
+            calls = _parse_tool_calls(msg.get("tool_calls"))
+        except (ValueError, KeyError, IndexError, TypeError, AttributeError) as e:
+            raise ModelError("unexpected response shape from the model server") from e
+        content = msg.get("content")
+        if isinstance(content, list):  # some servers return content parts
+            content = "".join(str(p.get("text", "")) for p in content if isinstance(p, dict))
+        return ToolReply(content=str(content or ""), tool_calls=calls)
+
     def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
@@ -304,6 +330,29 @@ class OpenAICompatClient:
 def _clean(e: Exception) -> Exception | None:
     """httpx errors carry the request (and so its headers); don't chain them as-is."""
     return None if isinstance(e, httpx.RequestError) else e
+
+
+def _openai_message(m: dict[str, Any]) -> dict[str, Any]:
+    """A provider-neutral chat message in the OpenAI /chat/completions shape."""
+    role = m["role"]
+    if role == "tool":
+        return {
+            "role": "tool",
+            "tool_call_id": m.get("tool_call_id") or m.get("name", ""),
+            "content": str(m.get("content") or ""),
+        }
+    out: dict[str, Any] = {"role": role, "content": str(m.get("content") or "")}
+    if role == "assistant" and m.get("tool_calls"):
+        out["content"] = out["content"] or None
+        out["tool_calls"] = [
+            {
+                "id": tc.id or f"call_{i}",
+                "type": "function",
+                "function": {"name": tc.name, "arguments": json.dumps(tc.arguments)},
+            }
+            for i, tc in enumerate(m["tool_calls"])
+        ]
+    return out
 
 
 def _message_content(resp: httpx.Response) -> str:
@@ -382,6 +431,16 @@ class FallbackLLM:
 
     def chat_text(self, system: str, user: str) -> str:
         return self._call(lambda m: m.chat_text(system, user))
+
+    def chat_tools(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> ToolReply:
+        def call(m: LLM) -> ToolReply:
+            fn = getattr(m, "chat_tools", None)
+            if fn is None:
+                raise ModelError(f"{m.model_name} can't use tools")
+            reply: ToolReply = fn(messages, tools)
+            return reply
+
+        return self._call(call)
 
     # Vectors from two different models don't compare, so embeddings stay on the primary.
     def embed(self, texts: list[str]) -> list[list[float]]:

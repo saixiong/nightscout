@@ -421,10 +421,10 @@ def test_project_rebuild_job(env, monkeypatch) -> None:
 
 
 # -- guide and not-yet endpoints ----------------------------------------------------------
-def test_guide_has_no_chat(env) -> None:
+def test_guide_starts_with_the_overview(env) -> None:
     client, *_ = env
     text = client.get("/api/guide").json()["markdown"]
-    assert text.startswith("# What Night Scout does") and "chat" not in text.lower()
+    assert text.startswith("# What Night Scout does")
 
 
 # -- sources: toggle and add ---------------------------------------------------------------

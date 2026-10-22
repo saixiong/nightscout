@@ -1141,6 +1141,13 @@ def create_app(
         state["cfg"] = load_config(config_path)
         state.pop("llm", None)  # roles or providers may have changed
 
+    # chat drawer (Track B)
+    from .chat_routes import register as register_chat
+
+    register_chat(
+        app, store=store, state=state, config_path=config_path, save_cfg=save_cfg, jobs=jobs
+    )
+
     @app.post("/api/sources/toggle")
     @config_writer
     def toggle_source(body: ToggleBody) -> Any:

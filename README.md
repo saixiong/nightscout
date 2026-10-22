@@ -142,6 +142,52 @@ Your profile, the database, digests and votes live in `~/.night-scout/` (or
 `$NIGHT_SCOUT_HOME`). The only network traffic is the fetches to public sources (and, if you
 click Research more, to that item's page). Model calls go to Ollama on localhost.
 
+## Ask Gemma (the chat drawer)
+
+**✦ Ask** opens a drawer where Gemma answers questions about a day's Digest or one story.
+It doesn't guess from memory: it calls research tools and shows each call as it happens
+(click a call to see what came back), then answers with links to the pages it used.
+
+| Tool | What it does |
+|---|---|
+| Tonight's items | Searches every item fetched that night: titles, headlines, topics, summaries |
+| Read a page | Fetches one public web page and keeps the readable text |
+| YouTube transcript | The English transcript of a video |
+| Hacker News | Stories, points and comment counts from HN search |
+| Web search | Optional: your SearXNG instance or the Brave Search API |
+
+The chat uses the `chat` model role, which follows the Judge model unless you set
+`roles.chat` in `config.yaml`. Conversations are kept in `scout.db`.
+
+Safety: text from pages, transcripts and search results is data, never instructions (the
+prompt says so, and tool output is passed back as tool results). One answer gets at most
+five tool calls. Read a page only fetches public http(s) addresses, checked on every
+redirect and pinned to the checked IP, with time, size and content-type limits; it can't
+reach this computer or your network. Tools run from your machine; with a local model,
+nothing but those fetches leaves it.
+
+### Web search (optional)
+
+Off by default; then Gemma isn't offered the tool at all. Pick a provider in
+**Settings → Chat & search** and press **Test**.
+
+- **SearXNG** (no key): run your own instance, e.g.
+  `docker run -d -p 8888:8080 -v "$PWD/searxng:/etc/searxng" searxng/searxng`, then enable
+  JSON output in `searxng/settings.yml` (under `search:`, set `formats: [html, json]`) and
+  restart it. Enter `http://127.0.0.1:8888` in Settings. Without JSON output SearXNG answers
+  403 and the Test button says how to fix it.
+- **Brave Search API**: get a key at [brave.com/search/api](https://brave.com/search/api/)
+  (there's a free tier) and paste it in Settings. It's stored in the OS keychain under
+  `brave-search`, shown only masked, and never written to `config.yaml`.
+
+Either way, only Gemma's search words go to the provider. In `config.yaml`:
+
+```yaml
+search:
+  provider: searxng        # none | searxng | brave
+  searxng_url: http://127.0.0.1:8888
+```
+
 ## Configuration
 
 `config.yaml` holds the models, thresholds, sources, project directories and schedule:
