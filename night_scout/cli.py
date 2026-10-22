@@ -11,6 +11,12 @@ from .core.config import load_config, save_config, starter_config
 from .core.paths import default_config_path
 
 
+def _pretty(p: Path | str) -> str:
+    """~ instead of the home directory, so pasted output doesn't leak usernames."""
+    s, home = str(p), str(Path.home())
+    return "~" + s[len(home) :] if s.startswith(home) else s
+
+
 def _setup_logging(verbose: bool) -> None:
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.INFO,
@@ -24,13 +30,13 @@ def _setup_logging(verbose: bool) -> None:
 def cmd_init(args: argparse.Namespace) -> int:
     path: Path = args.config
     if path.exists() and not args.force:
-        print(f"Config already exists at {path}. Use --force to overwrite.")
+        print(f"Config already exists at {_pretty(path)}. Use --force to overwrite.")
         cfg = load_config(path)
     else:
         projects = [str(Path(p).expanduser().resolve()) for p in args.project]
         cfg = starter_config(projects)
         save_config(cfg, path)
-        print(f"Wrote {path}. Edit it to choose your sources and projects.")
+        print(f"Wrote {_pretty(path)}. Edit it to choose your sources and projects.")
     if args.no_profile:
         return 0
     from .core.profile import build_profile_file
@@ -42,7 +48,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         )
         return 0
     out = build_profile_file(cfg)
-    print(f"Wrote profile to {out}. It's plain YAML; edit it freely.")
+    print(f"Wrote profile to {_pretty(out)}. It's plain YAML; edit it freely.")
     return 0
 
 
@@ -51,7 +57,7 @@ def cmd_profile(args: argparse.Namespace) -> int:
 
     cfg = load_config(args.config)
     out = build_profile_file(cfg)
-    print(f"Rebuilt profile at {out}.")
+    print(f"Rebuilt profile at {_pretty(out)}.")
     return 0
 
 
@@ -64,7 +70,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     for line in result.status_lines:
         print("  " + line)
     if result.digest_path:
-        print(f"\nDigest: {result.digest_path}")
+        print(f"\nDigest: {_pretty(result.digest_path)}")
     return 0 if result.ok else 1
 
 
@@ -100,7 +106,7 @@ def cmd_schedule(args: argparse.Namespace) -> int:
     if args.install:
         print(install(cfg, args.config))
         return 0
-    print(describe(cfg, args.config))
+    print(describe(cfg, args.config, show_plist=args.show_plist))
     return 0
 
 
@@ -140,6 +146,7 @@ def build_parser() -> argparse.ArgumentParser:
     g = s.add_mutually_exclusive_group()
     g.add_argument("--install", action="store_true", help="install the job for this user")
     g.add_argument("--uninstall", action="store_true", help="remove the installed job")
+    s.add_argument("--show-plist", action="store_true", help="macOS: print the launchd plist")
     s.set_defaults(func=cmd_schedule)
     return p
 

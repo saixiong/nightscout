@@ -21,7 +21,9 @@ UNIT = "night-scout"
 
 
 def run_command(config_path: Path) -> list[str]:
-    return [sys.executable, "-m", "night_scout.cli", "--config", str(config_path.resolve()), "run"]
+    # absolute(), not resolve(): keep the path the way the user wrote it (symlinks intact)
+    config = str(config_path.expanduser().absolute())
+    return [sys.executable, "-m", "night_scout.cli", "--config", config, "run"]
 
 
 def _env() -> dict[str, str]:
@@ -91,12 +93,12 @@ def _systemd_dir() -> Path:
 
 
 # -- public ----------------------------------------------------------------------
-def describe(cfg: Config, config_path: Path) -> str:
+def describe(cfg: Config, config_path: Path, show_plist: bool = False) -> str:
     """Human-readable plan. Home is shown as ~ (the installed job uses full paths)."""
-    return _describe(cfg, config_path).replace(str(Path.home()), "~")
+    return _describe(cfg, config_path, show_plist).replace(str(Path.home()), "~")
 
 
-def _describe(cfg: Config, config_path: Path) -> str:
+def _describe(cfg: Config, config_path: Path, show_plist: bool = False) -> str:
     t = cfg.schedule.time
     head = (
         f"Night Scout runs once a night at {t} (local time), reads your sources, and leaves a\n"
@@ -104,11 +106,15 @@ def _describe(cfg: Config, config_path: Path) -> str:
         "Ollama needs to be running at that time (the Ollama app, or `ollama serve`).\n\n"
     )
     if sys.platform == "darwin":
+        if show_plist:
+            return head + launchd_plist(cfg, config_path).decode()
         return (
             head
-            + f"macOS launchd agent ({launchd_plist_path()}):\n\n"
-            + launchd_plist(cfg, config_path).decode()
-            + "\nInstall it:  night-scout schedule --install\n"
+            + f"  when     every day at {t}\n"
+            + f"  runs     night-scout --config {config_path.expanduser().absolute()} run\n"
+            + f"  log      {cfg.data_path() / 'logs' / 'run.log'}\n"
+            + f"  agent    {launchd_plist_path()}\n\n"
+            + "Install it:  night-scout schedule --install     (see it first: --show-plist)\n"
             "Remove it:   night-scout schedule --uninstall\n"
             "If the Mac is asleep at that time, launchd runs the job when it wakes.\n"
         )
