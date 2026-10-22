@@ -78,6 +78,9 @@ def _port_free(port: int) -> bool:
     import socket
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        # Like uvicorn: connections left in TIME_WAIT by a server that just stopped don't
+        # count. Only a live listener makes the bind fail.
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.bind(("127.0.0.1", port))
         except OSError:

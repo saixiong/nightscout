@@ -236,3 +236,23 @@ def test_setup_command_first_launch_writes_starter_config(tmp_path: Path, monkey
     assert cfg.projects == [] and cfg.sources.rss  # the starter sources, no projects yet
     out = capsys.readouterr().out
     assert "First launch" in out and "already running on port 8765" in out
+
+
+def test_port_check_sees_a_listener_but_not_time_wait() -> None:
+    import socket
+
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", 0))
+    port = srv.getsockname()[1]
+    srv.listen()
+    try:
+        assert cli._port_free(port) is False
+        # leave a connection behind in TIME_WAIT on the server side, then stop listening
+        c = socket.create_connection(("127.0.0.1", port))
+        conn, _ = srv.accept()
+        conn.close()
+        c.close()
+    finally:
+        srv.close()
+    assert cli._port_free(port) is True
