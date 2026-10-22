@@ -63,7 +63,11 @@ function steps() {
 }
 let STEPS = [];
 let tourI = -1;
-function startTour() { NS.S.howHidden = false; STEPS = steps(); tourI = 0; showStep(); }
+async function startTour() {
+  NS.S.howHidden = false;
+  if (B()?.projects?.length && !NS.M) await NS.loadMorning(); // the Digest opens first, so Actions may not be loaded yet
+  STEPS = steps(); tourI = 0; showStep();
+}
 function endTour() { tourI = -1; $("#tour")?.remove(); }
 function showStep(tries = 0) {
   const st = STEPS[tourI]; if (!st) return endTour();
