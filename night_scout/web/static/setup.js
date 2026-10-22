@@ -480,8 +480,15 @@ async function finish() {
   }
   await NS.loadBoot();
   const now = U.go === "now", nightly = U.nightly; // read before the reset below clears U
+  if (now) {
+    const btn = $("#sNext"); if (btn) btn.textContent = "Starting the scout…";
+    const up = await NS.kickRun(); // navigates to Morning, which clears U
+    NS.setupReset();
+    toast(up ? "<b>The scout is out.</b> Your digest lands on Morning when it's done."
+      : "<b>Started,</b> but the run hasn't shown up yet. If Morning stays empty, look at logs/run.log in the data folder.");
+    return;
+  }
   NS.setupReset();
-  if (now) { toast("<b>The scout is out.</b> Your digest lands on Morning when it's done."); await NS.kickRun(); }
-  else { toast(nightly ? `<b>All set.</b> The scout goes out at ${esc(B().schedule.time)}.` : "<b>All set.</b>"); go("#/morning"); }
+  toast(nightly ? `<b>All set.</b> The scout goes out at ${esc(B().schedule.time)}.` : "<b>All set.</b>"); go("#/morning");
 }
 })();

@@ -1029,10 +1029,17 @@ async function boot() {
   watchRun();
 }
 
-/* Setup's "Run now": wait for the new run to show up, then follow it on Morning. */
+/* Setup's "Run now": wait (up to a minute) for the new run to register, then follow it on
+   Morning. Returns whether it showed up. */
 async function kickRun() {
-  for (let i = 0; i < 20 && !RUN?.running; i++) { await loadRun(); if (!RUN?.running) await new Promise(r => setTimeout(r, 750)); }
+  const until = Date.now() + 60000;
+  for (;;) {
+    await loadRun();
+    if (RUN?.running || Date.now() > until) break;
+    await new Promise(r => setTimeout(r, 1000));
+  }
   M = null; reset(); go("#/morning"); watchRun();
+  return !!RUN?.running;
 }
 
 Object.assign(NS, { loadBoot, kickRun, $, $$, esc, md, toast, go, badge, wireTilt, chrome, card, kindPill, words, fx, api, failToast, ext, isWeb, reset, loading, errorView,
