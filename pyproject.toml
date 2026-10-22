@@ -21,6 +21,7 @@ dependencies = [
   "python-multipart>=0.0.9",
   "youtube-transcript-api>=1.0",
   "markdown-it-py>=3.0",
+  "keyring>=25",
 ]
 
 [project.urls]
