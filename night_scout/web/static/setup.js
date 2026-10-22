@@ -48,6 +48,7 @@ async function loadAll() {
 const reload = async (...keys) => {
   const url = { setup: "/api/setup", pv: "/api/providers", src: "/api/sources", pj: "/api/projects", sc: "/api/schedule" };
   const rs = await Promise.all(keys.map(k => api("GET", url[k])));
+  if (!D) return; // left Setup meanwhile
   rs.forEach((r, i) => { if (r.ok) D[keys[i]] = r.data; });
 };
 function freshState() {
@@ -61,11 +62,11 @@ function freshState() {
     time: D.sc.time, nightly: rerun ? D.sc.installed !== false : true, plist: false, go: "now",
   };
 }
-const step = () => STEPS[U.step][0];
+const step = () => (U ? STEPS[U.step][0] : null); // U is null once you leave Setup
 // Projects, Sources and Interests save the moment you change them; Model's role and the
 // Schedule save on Continue. The rail says "saved" or "changed" accordingly.
 const INSTANT = ["projects", "sources", "interests"];
-const mark = (...ks) => { (ks.length ? ks : [step()]).forEach(k => { U.dirty[k] = true; if (INSTANT.includes(k)) U.saved[k] = true; }); drawRail(); drawBar(); };
+const mark = (...ks) => { if (!U) return; (ks.length ? ks : [step()]).forEach(k => { U.dirty[k] = true; if (INSTANT.includes(k)) U.saved[k] = true; }); drawRail(); drawBar(); };
 
 /* ---------- model helpers ---------- */
 const ollama = () => D.pv.providers.find(p => p.id === "ollama");
@@ -135,7 +136,7 @@ function render() {
   drawRail(); drawCard(true);
 }
 function drawRail() {
-  const rail = $("#rail"); if (!rail) return;
+  const rail = $("#rail"); if (!rail || !U) return;
   rail.innerHTML = STEPS.map(([k, t], i) => {
     const locked = i > U.reached, cur = i === U.step, done = !cur && !locked && (U.saved[k] || U.rerun || i < U.reached);
     const st = U.rerun && U.saved[k] ? `<span class="st saved">saved</span>` : U.rerun && U.dirty[k] ? `<span class="st changed">changed</span>` : !U.rerun && U.saved[k] ? `<span class="st saved">saved</span>` : "";
@@ -162,7 +163,7 @@ function drawCard(first) {
   drawBody(); drawBar();
 }
 function drawBar() {
-  const bar = $("#sbar"); if (!bar) return;
+  const bar = $("#sbar"); if (!bar || !U) return;
   const k = step(), last = U.step === 5, ok = canNext();
   const pending = (k === "model" && judgeWanted() !== D.pv.roles?.judge) || (k === "schedule" && (U.dirty.schedule || !U.rerun) && !U.saved.schedule);
   const label = last ? (U.rerun ? "Done" : U.go === "now" ? "Finish and run now" : "Finish setup") : pending ? "Save & continue" : "Continue";
@@ -197,11 +198,12 @@ async function next() {
     }
     if (U.rerun && U.dirty[k] && !["model", "schedule"].includes(k)) U.saved[k] = true;
     if (!U.rerun) U.saved[k] = true;
-    if (k === "finish") return await finish();
+    if (k === "finish") return await finish(); // finish() leaves Setup and clears U
     U.busy = false; goStep(U.step + 1);
-  } finally { U.busy = false; drawBar(); }
+  } finally { if (U) { U.busy = false; drawBar(); } }
 }
 function drawBody() {
+  if (!U || !$("#sbody")) return;
   const k = step();
   const head = (title, lead) => `<div class="big-head"><span class="step-k">Step ${U.step + 1} of 6 · ${esc(STEPS[U.step][1])}</span></div>
     <h2 class="serif">${title}</h2><p class="step-lead">${lead}</p>
@@ -280,18 +282,21 @@ async function testCloud() {
     (failed ? `<p class="small neg testmsg">Test failed at ${esc(failed.name)}: ${esc(failed.detail || "")}</p>` : `<p class="small testmsg good">Connection test passed.</p>`);
 }
 async function pull(n) {
-  if (U.pulls[n]) return;
+  if (!U || U.pulls[n]) return;
   U.pulls[n] = { percent: 0, status: "starting" }; if (step() === "model") drawBody();
   const r = await api("POST", "/api/ollama/pull", { name: n });
   if (!r.ok) { delete U.pulls[n]; if (step() === "model") drawBody(); return failToast(r, "Pulling models"); }
   for (;;) {
     await sleep(1000);
+    if (!U) return; // left Setup: the pull carries on in Ollama, the page stops following it
     const s = await api("GET", `/api/ollama/pull?name=${encodeURIComponent(n)}`), d = s.data || {};
     if (d.state === "error") { delete U.pulls[n]; toast(`<b>Pull failed.</b> ${esc(d.error || "")}`); break; }
     if (d.state === "done") { delete U.pulls[n]; await reload("pv"); toast(`<b>Pulled ${esc(n)}.</b>`); mark("model"); break; }
+    if (!U) return;
     U.pulls[n] = { percent: d.percent, status: d.status };
     if (step() === "model") { drawBody(); }
   }
+  if (!U) return;
   if (step() === "model") { drawBody(); drawBar(); } drawRail();
 }
 
@@ -348,10 +353,12 @@ async function readProjects(names) {
     const r = await api("POST", `/api/projects/${encodeURIComponent(n)}/read`, {});
     if (!r.ok) { failToast(r, "Reading projects"); continue; }
     let s = r.data;
-    while (s.state === "running") { await sleep(1200); const q = await api("GET", `/api/projects/${encodeURIComponent(n)}/read`); if (q.ok) s = q.data; }
+    while (s.state === "running") { await sleep(1200); if (!U) return; const q = await api("GET", `/api/projects/${encodeURIComponent(n)}/read`); if (q.ok) s = q.data; }
     if (s.state === "error") toast(`<b>Couldn't read ${esc(n)}.</b> ${esc(s.error || "")}`); else done++;
+    if (!U) return;
     await reload("setup", "pj");
   }
+  if (!U) return;
   U.readQ = null; mark("projects", "interests");
   if (step() === "projects") { drawBody(); drawBar(); } drawRail();
   if (done) toast(`<b>Profiled.</b> Gemma read ${done} project${done > 1 ? "s" : ""}.`);
@@ -472,9 +479,9 @@ async function finish() {
     if (!r.ok) return failToast(r, "Starting a run");
   }
   await NS.loadBoot();
-  const now = U.go === "now";
+  const now = U.go === "now", nightly = U.nightly; // read before the reset below clears U
   NS.setupReset();
   if (now) { toast("<b>The scout is out.</b> Your digest lands on Morning when it's done."); await NS.kickRun(); }
-  else { toast(U.nightly ? `<b>All set.</b> The scout goes out at ${esc(B().schedule.time)}.` : "<b>All set.</b>"); go("#/morning"); }
+  else { toast(nightly ? `<b>All set.</b> The scout goes out at ${esc(B().schedule.time)}.` : "<b>All set.</b>"); go("#/morning"); }
 }
 })();
