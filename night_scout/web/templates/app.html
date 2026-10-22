@@ -6,8 +6,10 @@
 <meta name="csrf-token" content="{{ csrf }}">
 <title>Night Scout</title>
 <link rel="stylesheet" href="/static/app.css?v={{ v }}">
+<link rel="stylesheet" href="/static/digest.css?v={{ v }}">
 <script src="/static/app.js?v={{ v }}" defer></script>
 <script src="/static/pages.js?v={{ v }}" defer></script>
+<script src="/static/digest.js?v={{ v }}" defer></script>
 <script src="/static/setup.js?v={{ v }}" defer></script>
 </head>
 <body>
@@ -15,9 +17,10 @@
 <div class="dawn" aria-hidden="true"></div>
 
 <header class="top">
-  <a class="brand" href="#/morning"><span class="moon" aria-hidden="true"></span>Night Scout</a>
+  <a class="brand" href="#/digest"><span class="moon" aria-hidden="true"></span>Night Scout</a>
   <nav id="nav">
-    <a href="#/morning" data-page="morning"><span class="ni">☀</span>Morning</a>
+    <a href="#/digest" data-page="digest"><span class="ni">☾</span>Digest</a>
+    <a href="#/actions" data-page="morning"><span class="ni">☀</span>Actions</a>
     <a href="#/projects" data-page="projects"><span class="ni">◫</span>Projects</a>
     <a href="#/sources" data-page="sources"><span class="ni">◉</span>Sources</a>
     <a href="#/guide" data-page="guide"><span class="ni">?</span>Guide</a>

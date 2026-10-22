@@ -151,7 +151,8 @@ function chrome(page) {
 
 /* ---- router ---- */
 function route() {
-  const [, page = "morning", a, b] = (location.hash || "#/morning").split("/");
+  let [, page = "digest", a, b] = (location.hash || "#/digest").split("/");
+  if (page === "actions") page = "morning"; // Actions is the old Morning view, renamed
   document.body.dataset.page = page;
   document.body.classList.remove("card-open");
   if (!B) return;
@@ -159,7 +160,8 @@ function route() {
   if (NS.pages[page]) return NS.pages[page](arg, b);
   if (page === "sources") return renderSources();
   if (page === "projects" || page === "profile") return renderProfile(arg);
-  renderMorning(arg, b);
+  if (page === "morning" || !NS.pages.digest) return renderMorning(arg, b);
+  NS.pages.digest();
 }
 window.addEventListener("hashchange", route);
 const go = h => { if (location.hash === h) route(); else location.hash = h; };
@@ -173,6 +175,7 @@ function errorView(r) {
 /* ================= MORNING ================= */
 function morningState() {
   if (RUN?.running) return "running";
+  if (!B.projects.length && (B.topics || []).length) return "noprojects";
   if (!M.day) return "empty";
   if (!visibleCards().length && !(M.ideas || []).length) return "quiet";
   return "normal";
@@ -287,7 +290,7 @@ function showIdea(id) {
   const started = S.ideaStarted[x.id] || (x.status === "started" ? { path: null } : null);
   const items = M.idea_items || {};
   el.innerHTML = `<div class="big-scroll">
-    <div class="big-head"><a class="back" href="#/morning">‹ Morning</a><span class="kind k-idea">New project idea</span><span class="muted">Gemma · from last night's ${M.run?.stats?.scored ?? 0} judged items</span><span class="spacer"></span>
+    <div class="big-head"><a class="back" href="#/actions">‹ Actions</a><span class="kind k-idea">New project idea</span><span class="muted">Gemma · from last night's ${M.run?.stats?.scored ?? 0} judged items</span><span class="spacer"></span>
       ${started ? "" : `<button class="btn ghost" id="iNo">Not interested</button>`}</div>
     <h2 class="serif idea-title">${esc(x.title)}</h2>
     <p class="summary idea-pitch-lg">${esc(x.pitch)}</p>
@@ -340,7 +343,7 @@ function showBig(id, direction, keepPos) {
   const el = document.createElement("div");
   el.className = "big" + (keepPos ? "" : " enter");
   el.innerHTML = `<div class="big-scroll">
-    <div class="big-head"><a class="back" href="#/morning">‹ Morning</a>${badge(c.source, 1)}<span><strong class="hi">${esc(c.source_name)}</strong>${c.author && c.author !== c.source_name ? " · " + esc(c.author) : ""}${c.published ? " · " + esc(fmtShort(c.published)) : ""}</span>
+    <div class="big-head"><a class="back" href="#/actions">‹ Actions</a>${badge(c.source, 1)}<span><strong class="hi">${esc(c.source_name)}</strong>${c.author && c.author !== c.source_name ? " · " + esc(c.author) : ""}${c.published ? " · " + esc(fmtShort(c.published)) : ""}</span>
       ${c.also_seen.length ? `<span class="buzz" title="Also seen on ${esc(c.also_seen.join(", "))}">also on ${c.also_seen.length} more</span>` : ""}
       <span class="spacer"></span>
       <div class="votes">
@@ -635,6 +638,11 @@ function paneNote(c, pane, aid) {
 
 /* ---- Morning states: scout running, quiet, first run ---- */
 let runPoll;
+const scoutingFor = () => {
+  if (RUN?.projects) return `${RUN.projects} project${RUN.projects === 1 ? "" : "s"}`;
+  const n = (B.topics || []).length;
+  return n ? `your ${n} topic${n === 1 ? "" : "s"}` : "you";
+};
 function renderMorningState(app, s) {
   const st = M.run?.stats || {};
   const projects = B.projects;
@@ -643,10 +651,11 @@ function renderMorningState(app, s) {
     quiet: M.ignored && !(M.cards || []).length
       ? `<p class="eyebrow">Good morning · ${esc(dayLabel())}</p><h1>All <em>clear.</em></h1><p class="sub">You've hidden every pick for today.</p>`
       : `<p class="eyebrow">Good morning · ${esc(dayLabel())}</p><h1>A <em>quiet</em><br>morning.</h1><p class="sub">Nothing cleared the bar today. That's the point: no feed to scroll.</p>`,
+    noprojects: `<p class="eyebrow">Actions</p><h1>Actions come<br>from <em>your projects.</em></h1><p class="sub">You're reading the news without projects, and that's fine: the <a href="#/digest">Digest</a> has the night's stories for your topics.</p>`,
     empty: `<p class="eyebrow">Welcome</p><h1>No digest<br><em>yet.</em></h1><p class="sub">${projects.length ? "Your projects are profiled. Run the scout once, or schedule it for tonight." : "Profile your projects, then run the scout once or schedule it for tonight."}</p>`,
   }[s];
   let right = "";
-  if (s === "running") right = `<h2 class="serif">Scouting ${RUN.sources_total} sources for ${RUN.projects} project${RUN.projects === 1 ? "" : "s"}</h2>
+  if (s === "running") right = `<h2 class="serif">Scouting ${RUN.sources_total} sources for ${scoutingFor()}</h2>
       <ul class="stages" id="stages"></ul>
       <p class="muted small mt22">${esc(judge().model)} ${judge().local ? `on ${here()} · nothing leaves the machine` : `via ${esc(judge().provider)} · item text goes to ${esc(judge().provider)}`}. This page follows along every few seconds.</p>`;
   if (s === "quiet") right = (M.ignored && !(M.cards || []).length)
@@ -655,6 +664,14 @@ function renderMorningState(app, s) {
     : `<h2 class="serif">Nothing worth your morning.</h2>
       <p class="summary">Gemma read <strong>${st.scored ?? 0}</strong> of the <strong>${st.new ?? 0}</strong> new items.${M.best_score != null ? ` The best fit was <strong>${pct(M.best_score)}%</strong>;` : ""} the bar is <strong>${pct(M.bar)}%</strong>.</p>
       <div class="row"><a class="btn" href="#/sources">Check sources</a><a class="btn ghost" href="#/projects">Tune what projects care about</a></div>`;
+  if (s === "noprojects") right = `<h2 class="serif">Add a project to get actions.</h2>
+      <p class="summary">Point Night Scout at a folder you're building in. Each night Gemma checks every item against it and tells you what to do:</p>
+      <ul class="why-actions"><li><span class="kind k-issue">Issue</span><span>A security advisory or breaking bug in something you depend on.</span></li>
+        <li><span class="kind k-change">Change</span><span>A release or API change that affects your code.</span></li>
+        <li><span class="kind k-improvement">Improvement</span><span>A tool or technique worth trying on it, with a sandboxed <b>Try it</b>.</span></li>
+        <li><span>💡</span><span>New side-project ideas from the night's best items.</span></li></ul>
+      <div class="row"><a class="btn primary" href="#/setup">Add a project ›</a><a class="btn ghost" href="#/digest">Back to the Digest</a></div>
+      <p class="muted small mt22">Gemma reads only the README, manifests and file types. Your code never leaves this machine.</p>`;
   if (s === "empty") right = projects.length
     ? `<h2 class="serif">Two commands.</h2>
       <p class="summary">Run one pass now (about 15 minutes on Gemma 4 12B):</p><div class="cmdline">$ night-scout run</div>
@@ -698,15 +715,18 @@ function watchRun() {
     const was = !!RUN?.running;
     const r = await loadRun();
     if (!r.ok) return watchRun();
-    const page = (location.hash || "#/morning").split("/")[1] || "morning";
+    let page = (location.hash || "#/digest").split("/")[1] || "digest";
+    if (page === "actions") page = "morning";
+    const home = page === "morning" || page === "digest";
     if (was && !RUN.running) {
       await Promise.all([loadBoot(), loadMorning()]);
-      if (page === "morning") { reset(); route(); }
+      NS.digestReset?.();
+      if (home) { reset(); route(); }
       else chrome(page);
       const n = visibleCards().length;
-      toast(`<b>Good morning.</b> ${words(n)} thing${n === 1 ? "" : "s"} worth doing.`);
+      toast(B.projects.length ? `<b>Good morning.</b> ${words(n)} thing${n === 1 ? "" : "s"} worth doing.` : `<b>Good morning.</b> Your Digest is ready.`);
     } else if (!was && RUN.running) {
-      if (page === "morning") { reset(); route(); } else chrome(page);
+      if (home) { NS.digestReset?.(); reset(); route(); } else chrome(page);
     } else if (RUN.running) {
       drawStages(); chrome(page);
     }
@@ -1021,8 +1041,8 @@ async function boot() {
   if (!b.ok) return errorView(b);
   // First launch (no projects profiled yet): open Setup instead of an empty Morning, unless
   // this tab already chose "Skip setup for now".
-  const page = (location.hash || "#/morning").split("/")[1] || "morning";
-  if (B.setup?.needed && page === "morning" && !RUN?.running && !sessionStorage.getItem("nsSetupSkipped")) {
+  const page = (location.hash || "#/digest").split("/")[1] || "digest";
+  if (B.setup?.needed && ["digest", "morning", "actions"].includes(page) && !RUN?.running && !sessionStorage.getItem("nsSetupSkipped")) {
     location.replace("#/setup"); // replace: Back shouldn't bounce into the empty Morning
   }
   route();
@@ -1042,7 +1062,7 @@ async function kickRun() {
   return !!RUN?.running;
 }
 
-Object.assign(NS, { loadBoot, kickRun, $, $$, esc, md, toast, go, badge, wireTilt, chrome, card, kindPill, words, fx, api, failToast, ext, isWeb, reset, loading, errorView,
+Object.assign(NS, { runActive: () => !!RUN?.running, loadBoot, kickRun, $, $$, esc, md, toast, go, badge, wireTilt, chrome, card, kindPill, words, fx, api, failToast, ext, isWeb, reset, loading, errorView,
   S, visibleCards, loadMorning, route });
 /* live views of the loaded data (Object.assign would copy today's value, not a getter) */
 Object.defineProperties(NS, { B: { get: () => B }, M: { get: () => M } });

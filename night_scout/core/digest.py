@@ -139,17 +139,19 @@ def day_window(day: date) -> tuple[str, str]:
 
 
 def split_digest(
-    rows: list[sqlite3.Row], topics: list[str], weights: Weights, bar: float, size: int
+    rows: list[sqlite3.Row],
+    topics: list[str],
+    weights: Weights,
+    bar: float,
+    size: int,
+    hidden: set[int] | None = None,
 ) -> tuple[list[sqlite3.Row], list[sqlite3.Row]]:
     """(stories, everything else). Stories: Gemma filed them under one of your topics at or above
-    the bar, best first, at most `size`. The rest: every other item, most similar first. Hidden
-    items and muted sources are left out of both."""
+    the bar, best first, at most `size`. The rest: every other item, most similar first. Items you
+    hid ("Not for me" or ✕) and muted sources are left out of both."""
     want = {t.casefold() for t in topics}
-    keep = [
-        r
-        for r in rows
-        if r["id"] not in weights.ignored_items and not weights.muted(r["source_name"])
-    ]
+    gone = weights.ignored_items | (hidden or set())
+    keep = [r for r in rows if r["id"] not in gone and not weights.muted(r["source_name"])]
     stories = [
         r
         for r in keep

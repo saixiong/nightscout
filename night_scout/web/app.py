@@ -776,8 +776,9 @@ def create_app(
             rows = store.items_between(start, end)
             digest_row = store.digest(day)
             actions_day = set(_json(digest_row["item_ids"], [])) if digest_row else set()
+            hidden = {r["id"] for r in rows if store.item_feedback(r["id"]) == -1}
             stories, rest = split_digest(
-                rows, topics, weights, c.thresholds.digest_bar, c.thresholds.digest_max
+                rows, topics, weights, c.thresholds.digest_bar, c.thresholds.digest_max, hidden
             )
             out["stories"] = [story(r, actions_day, True) for r in stories]
             out["rest"] = [story(r, actions_day, True) for r in rest]

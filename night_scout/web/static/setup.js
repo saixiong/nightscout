@@ -9,9 +9,9 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 const STEPS = [
   ["model", "Model", "Where Gemma thinks"],
-  ["projects", "Projects", "What you're building"],
+  ["projects", "Projects", "Optional: what you're building"],
   ["sources", "Sources", "What it reads overnight"],
-  ["interests", "Interests", "What it looks for"],
+  ["interests", "Topics", "What it looks for"],
   ["schedule", "Schedule", "When it goes out"],
   ["finish", "Finish", "First run"],
 ];
@@ -62,6 +62,9 @@ function freshState() {
     models: pid !== "ollama" && j.model ? { [pid]: j.model } : {}, tested: {},
     pulls: {}, olCheck: null, confirm: null, readQ: null, ipj: 0, addType: "website",
     time: D.sc.time, nightly: rerun ? D.sc.installed !== false : true, plist: false, go: "now",
+    // Step 2: "Digest + My projects" or "Just the Digest" (projects are optional since Oct 22)
+    mode: rerun && !D.setup.projects.length && (D.setup.topics || []).length ? "digest" : "projects",
+    topics: [...(D.setup.topics || [])],
   };
 }
 const step = () => (U ? STEPS[U.step][0] : null); // U is null once you leave Setup
@@ -108,9 +111,14 @@ function summary(k) {
     if (needsKey() && !pv(cur())?.key?.configured) return `${curName()} · key needed`;
     return `${curName()} · ${leaves() ? "leaves this machine" : "on this machine"}`;
   }
-  if (k === "projects") return projRows().length ? projRows().map(p => p.name).join(", ") : "None yet";
+  if (k === "projects") return projRows().length ? projRows().map(p => p.name).join(", ") : U.mode === "digest" ? "None · Digest only" : "None yet";
   if (k === "sources") { const c = D.src.catalog; return `${c.filter(x => x.enabled !== false).length} of ${c.length} on`; }
-  if (k === "interests") { const n = profiles().reduce((a, p) => a + p.interests.length, 0); return profiles().length ? `${n} interests · ${profiles().length} project${profiles().length > 1 ? "s" : ""}` : "Needs a project first"; }
+  if (k === "interests") {
+    const t = U.topics.length, n = profiles().reduce((a, p) => a + p.interests.length, 0);
+    const tp = t ? `${t} topic${t > 1 ? "s" : ""}` : "";
+    const pj = profiles().length ? `${n} project interest${n === 1 ? "" : "s"}` : "";
+    return [tp, pj].filter(Boolean).join(" · ") || "None yet";
+  }
   if (k === "schedule") return U.nightly ? `Every night at ${U.time}` : "Manual runs only";
   return U.go === "now" ? "Run once now" : U.nightly ? `Wait for ${U.time}` : "Not now";
 }
@@ -123,7 +131,12 @@ function canNext() {
     if (needsKey() && !pv(cur())?.key?.configured) return false;
     return U.tested[judgeWanted()] === true || keptJudge();
   }
-  if (k === "projects") return projRows().some(p => p.profiled) && projRows().every(p => p.profiled || !p.exists) && !U.readQ;
+  if (k === "projects") {
+    if (U.readQ) return false;
+    if (U.mode === "digest" && !projRows().length) return true; // the Digest needs no projects
+    return projRows().some(p => p.profiled) && projRows().every(p => p.profiled || !p.exists);
+  }
+  if (k === "interests") return U.topics.length > 0 || profiles().length > 0;
   return true;
 }
 function blockHint() {
@@ -137,7 +150,8 @@ function blockHint() {
     if (!curModel() || !curSaved()) return "Pick the model to judge with.";
     return U.tested[judgeWanted()] === false ? "The test failed: fix it and test again." : "Test the connection to continue.";
   }
-  if (k === "projects") return U.readQ ? "Gemma is reading…" : projRows().length ? "Let Gemma read your projects to continue." : "Add a project to continue.";
+  if (k === "projects") return U.readQ ? "Gemma is reading…" : projRows().length ? "Let Gemma read your projects to continue." : "Add a project, or choose Just the Digest.";
+  if (k === "interests") return "Add a topic to continue.";
   return "";
 }
 
@@ -211,7 +225,7 @@ function drawBar() {
     ${!last && !["model", "projects"].includes(k) ? `<button class="btn ghost" id="sSkip">${U.rerun ? "Keep as is" : "Skip this step"}</button>` : ""}
     <button class="btn primary" id="sNext" ${ok ? "" : "disabled"}>${esc(label)}${last ? "" : " ›"}</button>`;
   $("#sBack") && ($("#sBack").onclick = () => goStep(U.step - 1));
-  $("#sExit") && ($("#sExit").onclick = () => { sessionStorage.setItem("nsSetupSkipped", "1"); go("#/morning"); });
+  $("#sExit") && ($("#sExit").onclick = () => { sessionStorage.setItem("nsSetupSkipped", "1"); go("#/digest"); });
   $("#sSkip") && ($("#sSkip").onclick = () => { if (k === "schedule") { U.time = D.sc.time; U.nightly = U.rerun ? D.sc.installed !== false : U.nightly; U.saved.schedule = U.rerun; delete U.dirty.schedule; } goStep(U.step + 1); });
   $("#sNext").onclick = next;
 }
@@ -396,7 +410,18 @@ function stepProjects(head) {
   const body = $("#sbody");
   const rows = projRows(), prof = Object.fromEntries(profiles().map(p => [p.name, p]));
   const unread = rows.filter(p => !p.profiled && p.exists);
-  body.innerHTML = head("Which projects should it <em>scout for?</em>", "Add the folders of things you're building. Gemma reads each one (README, manifests, file types; never your secrets) and writes a short profile you can edit.") + `
+  const T2 = "The Digest, or the Digest <em>plus your projects?</em>";
+  const L2 = "Everyone gets the Digest: the night's best stories for the topics you type in step 4. Add projects and Gemma also tells you what to <b>do</b> about them: Issues, Changes and Improvements (the Actions page). Gemma reads each folder's README, manifests and file types, never your secrets.";
+  const choose = `<div class="choices two">
+      <button class="choice ${U.mode === "digest" ? "" : "on"}" data-mode="projects"><span class="tile">◫</span><b>Digest + My projects</b><small>Add folders you're building in. Gemma writes a short profile of each that you can edit.</small><span class="pros">Digest + Actions + project ideas</span></button>
+      <button class="choice ${U.mode === "digest" ? "on" : ""}" data-mode="digest"><span class="tile">☾</span><b>Just the Digest</b><small>No folders. You'll type the topics you follow in step 4.</small><span class="pros">Digest only · add projects any time</span></button>
+    </div>`;
+  const wireChoices = () => $$(".choice[data-mode]", body).forEach(b => b.onclick = () => { if (U.mode === b.dataset.mode) return; U.mode = b.dataset.mode; mark(); drawBody(); drawBar(); drawRail(); });
+  if (U.mode === "digest" && !rows.length) {
+    body.innerHTML = head(T2, L2) + choose + `<div class="newsnote">✓ No projects needed. The <b>Digest</b> opens every morning; <b>Actions</b> stays empty until you add a project here (Settings → Setup) or on the Projects page.</div>`;
+    fx(body); wireChoices(); return;
+  }
+  body.innerHTML = head(T2, L2) + choose + (U.mode === "digest" ? `<div class="newsnote mb14">Your projects stay and keep feeding Actions. Remove them below if you only want the Digest.</div>` : "") + `
     <div class="projlist">${rows.length ? rows.map(p => {
       const reading = U.readQ === p.name, pp = prof[p.name], conf = U.confirm;
       const status = reading ? `<span class="badge off">Gemma is reading…</span>` : !p.exists ? `<span class="badge off">Folder missing</span>` : p.profiled ? `<span class="badge ok">Profiled</span>` : `<span class="badge off">Not read yet</span>`;
@@ -436,6 +461,7 @@ function stepProjects(head) {
     U.confirm = null; readProjects([n]);
   });
   $("#readAll") && ($("#readAll").onclick = () => readProjects(unread.map(p => p.name)));
+  wireChoices();
 }
 // Two-click buttons: the first click asks, the second within 4 s acts.
 function askAgain(key) {
@@ -499,22 +525,33 @@ function stepSources(head) {
 /* ---------- 4. interests ---------- */
 function stepInterests(head) {
   const body = $("#sbody"), P = profiles();
-  if (!P.length) { body.innerHTML = head("What should it <em>look for?</em>", "Interests come from your project profiles.") + `<div class="empty-box">Add a project in step 2 first.</div>`; return; }
+  const lead = P.length
+    ? "Type the topics you follow, in your own words: Gemma files every item under one of them for your Digest. Below are the interests Gemma found in your projects; they drive Actions."
+    : "Type the topics you follow, in your own words: Gemma files every item under one of them for your Digest. You need at least one, since there are no projects.";
+  const topicsHTML = `<section class="isec"><h4 class="sec-h">Your topics <span class="by">· the Digest</span></h4>
+      <div class="topicbox">${U.topics.length ? U.topics.map((t, i) => `<span class="chip">${esc(t)}<button class="x" data-t="${i}" title="Remove ${esc(t)}">✕</button></span>`).join("") : `<span class="empty">No topics yet.</span>`}</div>
+      <div class="addrow"><input type="text" id="tIn" maxlength="60" placeholder="Add a topic, e.g. Rust, robotics, AI policy" autocomplete="off"><button class="btn" id="tAdd">Add</button></div></section>`;
+  if (!P.length) {
+    body.innerHTML = head("What should it <em>look for?</em>", lead) + topicsHTML;
+    wireTopics(body); return;
+  }
   U.ipj = Math.min(U.ipj, P.length - 1);
   const p = P[U.ipj];
-  body.innerHTML = head("What should it <em>look for?</em>", "Gemma found these while reading your projects. Remove anything off-target and add what it missed; every item is scored against this.") + `
-    <div class="row mt0 mb14"><div class="seg" id="ipj">${P.map((x, i) => `<button data-i="${i}" class="${i === U.ipj ? "on" : ""}">${esc(x.name)}</button>`).join("")}</div><span class="muted small">${esc(p.purpose)}</span></div>
+  body.innerHTML = head("What should it <em>look for?</em>", lead) + topicsHTML + `
+    <details class="pint" open><summary>Project interests · what Gemma found in your projects</summary>
+    <div class="row mt12 mb14"><div class="seg" id="ipj">${P.map((x, i) => `<button data-i="${i}" class="${i === U.ipj ? "on" : ""}">${esc(x.name)}</button>`).join("")}</div><span class="muted small">${esc(p.purpose)}</span></div>
     ${ISECS.map(([k, t, d]) => `<section class="isec"><h4 class="sec-h">${esc(t)} <span class="by">· ${p.generated_by === "heuristic" ? "from the manifests" : "found by Gemma"}</span></h4><p class="sub2">${esc(d)}</p>
       <div class="chips">${p[k].map((v, i) => `<span class="chip ${k === "key_dependencies" ? "mono" : ""}">${esc(v)}<button class="x" data-k="${k}" data-i="${i}" title="Remove">✕</button></span>`).join("")}
       <label class="chip add">+ <input type="text" data-add="${k}" placeholder="${k === "key_dependencies" ? "package name" : "add a topic"}" maxlength="80"></label></div></section>`).join("")}
-    <p class="muted small">The <a href="#/projects">Projects</a> page has the same editor, and profile.yaml is plain YAML if you'd rather edit it there.</p>`;
+    <p class="muted small">The <a href="#/projects">Projects</a> page has the same editor, and profile.yaml is plain YAML if you'd rather edit it there.</p></details>`;
+  wireTopics(body);
   $$("#ipj button").forEach(b => b.onclick = () => { U.ipj = +b.dataset.i; drawBody(); });
   const save = async () => {
     const r = await api("PUT", `/api/projects/${encodeURIComponent(p.name)}`, { purpose: p.purpose, ...Object.fromEntries(LISTS.map(k => [k, p[k]])) });
     if (!r.ok) { failToast(r, "Saving interests"); await reload("pj"); drawBody(); return false; }
     mark(); return true;
   };
-  $$(".x", body).forEach(b => b.onclick = async () => {
+  $$(".x[data-k]", body).forEach(b => b.onclick = async () => {
     const k = b.dataset.k, i = +b.dataset.i, v = p[k][i];
     p[k].splice(i, 1); drawBody();
     if (await save()) toast(`Removed <b>${esc(v)}</b>.`, async () => { p[k].splice(i, 0, v); drawBody(); await save(); drawBody(); });
@@ -523,6 +560,29 @@ function stepInterests(head) {
     if (e.key !== "Enter") return;
     const v = inp.value.trim(), k = inp.dataset.add; if (!v || p[k].includes(v)) return;
     p[k].push(v); drawBody(); await save(); $(`[data-add="${k}"]`)?.focus();
+  });
+}
+// Your topics save the moment you change them, like the rest of this step.
+function wireTopics(body) {
+  const saveTopics = async next => {
+    const r = await api("PUT", "/api/topics", { topics: next });
+    if (!r.ok) { failToast(r, "Saving topics"); return false; }
+    if (!U) return false; // left Setup while saving
+    U.topics = r.data.topics; D.setup.topics = r.data.topics; mark("interests"); return true;
+  };
+  $("#tAdd", body).onclick = async () => {
+    const inp = $("#tIn", body), v = inp.value.trim();
+    if (!v) return inp.focus();
+    if (U.topics.some(t => t.toLowerCase() === v.toLowerCase())) { inp.value = ""; return toast(`<b>${esc(v)}</b> is already a topic.`); }
+    if (await saveTopics([...U.topics, v])) { drawBody(); drawBar(); $("#tIn")?.focus(); }
+  };
+  $("#tIn", body).onkeydown = e => { if (e.key === "Enter") $("#tAdd").click(); };
+  $$(".x[data-t]", body).forEach(b => b.onclick = async () => {
+    const i = +b.dataset.t, v = U.topics[i];
+    if (await saveTopics(U.topics.filter((_, k) => k !== i))) {
+      drawBody(); drawBar();
+      toast(`Removed <b>${esc(v)}</b>.`, async () => { if (U && await saveTopics([...U.topics.slice(0, i), v, ...U.topics.slice(i)])) { drawBody(); drawBar(); } });
+    }
   });
 }
 
@@ -585,6 +645,6 @@ async function finish() {
     return;
   }
   NS.setupReset();
-  toast(nightly ? `<b>All set.</b> The scout goes out at ${esc(B().schedule.time)}.` : "<b>All set.</b>"); go("#/morning");
+  toast(nightly ? `<b>All set.</b> The scout goes out at ${esc(B().schedule.time)}.` : "<b>All set.</b>"); go("#/digest");
 }
 })();
