@@ -323,6 +323,14 @@ def judge(output: str, exit_code: int | None, timed_out: bool, expected: str) ->
     return False, f"steps ran, but the expected output “{expected.strip()}” never appeared"
 
 
+def scrub_paths(text: str, workdir: Path) -> str:
+    """Logs get shared and screenshotted: show the sandbox as <sandbox> and home as ~."""
+    for p in sorted({str(workdir.resolve()), str(workdir)}, key=len, reverse=True):
+        text = text.replace(p, "<sandbox>")
+    home = str(Path.home())
+    return text.replace(home, "~")
+
+
 def _clip_log(text: str) -> str:
     if len(text) <= MAX_LOG:
         return text
@@ -422,6 +430,7 @@ def run_plan(
                     "or set sandbox.allow_unfenced_venv: true to accept that risk.",
                 )
             output, code, timed_out = _run(args, run_dir, env, cfg.timeout_s)
+        output = scrub_paths(output, workdir)
         passed, reason = judge(output, code, timed_out, plan.expected_output)
         return Result(
             mode,

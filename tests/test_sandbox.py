@@ -154,3 +154,12 @@ def test_unverifiable_smoke_test_refused(tmp_path: Path) -> None:
     plan = Plan("python", [], ["tool --version || echo 'tool 1.2.3'"], "tool 1.2.3")
     res = run_plan(plan, SandboxConfig(prefer="venv"), tmp_path)
     assert not res.passed and "unverifiable" in res.reason
+
+
+def test_scrub_paths(tmp_path: Path) -> None:
+    from night_scout.core.sandbox import scrub_paths
+
+    log = f"pip in {tmp_path.resolve()}/.venv/lib\nhome {Path.home()}/x\n"
+    out = scrub_paths(log, tmp_path)
+    assert str(tmp_path.resolve()) not in out and "<sandbox>/.venv/lib" in out
+    assert str(Path.home()) not in out and "home ~/x" in out
