@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="csrf-token" content="{{ csrf }}">
+<title>Night Scout</title>
+<link rel="stylesheet" href="/static/app.css?v={{ v }}">
+<script src="/static/app.js?v={{ v }}" defer></script>
+<script src="/static/pages.js?v={{ v }}" defer></script>
+</head>
+<body>
+<canvas id="sky" aria-hidden="true"></canvas>
+<div class="dawn" aria-hidden="true"></div>
+
+<header class="top">
+  <a class="brand" href="#/morning"><span class="moon" aria-hidden="true"></span>Night Scout</a>
+  <nav id="nav">
+    <a href="#/morning" data-page="morning"><span class="ni">☀</span>Morning</a>
+    <a href="#/projects" data-page="projects"><span class="ni">◫</span>Projects</a>
+    <a href="#/sources" data-page="sources"><span class="ni">◉</span>Sources</a>
+    <a href="#/guide" data-page="guide"><span class="ni">?</span>Guide</a>
+    <a href="#/settings" data-page="settings" class="nav-settings"><span class="ni">⚙</span>Settings</a>
+  </nav>
+  <div class="top-right">
+    <span class="run-chip" id="runChip"></span>
+    <a class="gear" href="#/settings" data-page="settings" title="Settings: models, providers and API keys"><span class="gi">⚙</span><span>Settings</span></a>
+    <span class="model-chip" title="All judging happens on this machine"><span class="dot"></span><span id="modelName"></span> · local</span>
+  </div>
+</header>
+
+<main id="app"></main>
+
+<footer class="status" id="status"></footer>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>
