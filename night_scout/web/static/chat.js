@@ -290,5 +290,5 @@ window.addEventListener("hashchange", () => { if (C.open && C.float && page() !=
 window.addEventListener("resize", () => { if (C.open) layout(); });
 document.addEventListener("keydown", e => { if (e.key === "Escape" && C.open && !$("#tour") && !$(".sheet-wrap")) closeChat(); });
 
-Object.assign(NS, { openChat, closeChat, chatMarkdown: md });
+Object.assign(NS, { openChat, closeChat, chatMarkdown: md, chatCtx: () => (C.open ? { ...C.ctx } : null) });
 })();
