@@ -25,7 +25,7 @@ const title = i => i.headline || i.title;
 /* ---------- state ---------- */
 let D = null;                 // GET /api/digest
 const V = { filter: "all", view: "digest", page: 1, cur: null };
-let io = null;
+let held = false;            // a jump holds its story until you scroll (see watchFeed)
 const hasChat = () => typeof NS.openChat === "function";
 
 async function load(day) {
@@ -163,7 +163,11 @@ function drawFeed(scrollTo) {
   const target = scrollTo ?? V.cur;
   if (target) {
     const el = $(`.story[data-id="${target}"]`, feed);
-    if (el) { feed.scrollTop = el.offsetTop - ($(".feedhead", feed)?.offsetHeight || 0) - 8; el.classList.add("hl"); setTimeout(() => el.classList.remove("hl"), 1400); }
+    if (el) {
+      const top = Math.max(0, Math.min(el.offsetTop - ($(".feedhead", feed)?.offsetHeight || 0) - 8, feed.scrollHeight - feed.clientHeight));
+      held = true;
+      feed.scrollTop = top; el.classList.add("hl"); setTimeout(() => el.classList.remove("hl"), 1400);
+    }
   }
   $("#moreT")?.classList.toggle("on", V.view === "rest");
   watchFeed(); markList();
@@ -227,15 +231,19 @@ async function act(a, id, btn) {
   }
 }
 
-/* the list follows the feed: the story in view is highlighted on the left */
+/* the list follows the feed: the story under the feed's top edge is highlighted on the left.
+   A jump (list click, link, j/k) holds its story, even one too near the end to reach the top;
+   only your own scrolling (wheel, touch, drag, Page/Space/Home/End) moves the highlight. */
 function watchFeed() {
-  if (io) io.disconnect();
-  const feed = $("#feed"); if (!feed || !("IntersectionObserver" in window)) return;
-  io = new IntersectionObserver(es => {
-    const v = es.filter(e => e.isIntersecting).sort((x, y) => x.boundingClientRect.top - y.boundingClientRect.top)[0];
-    if (v) { V.cur = +v.target.dataset.id; markList(); }
-  }, { root: feed, rootMargin: "0px 0px -60% 0px" });
-  $$(".story", feed).forEach(s => io.observe(s));
+  const feed = $("#feed"); if (!feed) return;
+  feed.onwheel = feed.ontouchstart = feed.onpointerdown = () => { held = false; };
+  feed.onscroll = () => {
+    if (held) return;
+    const line = feed.getBoundingClientRect().top + ($(".feedhead", feed)?.offsetHeight || 0) + 24;
+    let cur = null;
+    for (const s of $$(".story", feed)) { if (s.getBoundingClientRect().top <= line) cur = s; else break; }
+    if (cur && +cur.dataset.id !== +V.cur) { V.cur = +cur.dataset.id; markList(); }
+  };
 }
 function markList() { $$(".dmini").forEach(m => m.classList.toggle("sel", +m.dataset.id === +V.cur)); }
 
@@ -293,6 +301,7 @@ document.addEventListener("keydown", e => {
   if (/INPUT|TEXTAREA|SELECT/.test(e.target.tagName) || e.target.isContentEditable || $(".sheet-wrap")) return;
   if ((location.hash || "#/digest").split("/")[1] !== "digest" && location.hash) return;
   if (!D || !D.day || $("#chat:focus-within")) return;
+  if (["PageDown", "PageUp", " ", "Home", "End"].includes(e.key)) held = false;
   const ids = feedItems().map(i => i.id), k = ids.indexOf(+V.cur);
   if (["ArrowDown", "j"].includes(e.key) && k < ids.length - 1) { e.preventDefault(); go(`#/digest/${ids[k + 1]}`); }
   if (["ArrowUp", "k"].includes(e.key) && k > 0) { e.preventDefault(); go(`#/digest/${ids[k - 1]}`); }
