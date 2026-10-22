@@ -68,6 +68,8 @@ class ProviderConfig(BaseModel):
     name: str = ""
     base_url: str
     api_key_env: str | None = None
+    # Models to offer for roles. Ollama lists its own; OpenAI-compatible servers are told.
+    models: list[str] = Field(default_factory=list)
 
     @field_validator("id")
     @classmethod

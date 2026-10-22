@@ -45,6 +45,13 @@ PRESETS: dict[str, ProviderConfig] = {
         name="LM Studio",
         base_url="http://127.0.0.1:1234/v1",
     ),
+    "openai": ProviderConfig(
+        id="openai",
+        kind="openai_compatible",
+        name="OpenAI",
+        base_url="https://api.openai.com/v1",
+        api_key_env="OPENAI_API_KEY",
+    ),
     "openrouter": ProviderConfig(
         id="openrouter",
         kind="openai_compatible",

@@ -54,7 +54,7 @@ Night Scout only uses official feeds and public APIs. No logins, no scraping.
 
 By default everything runs on **Ollama** on your machine: Gemma 4 12B judges items and writes briefs, Gemma 4 E4B is the fallback, and EmbeddingGemma finds near-duplicates. Settings → Providers shows each model role and which model fills it.
 
-You can also connect LM Studio or any OpenAI-compatible local server, or a cloud provider (Anthropic, OpenAI, Google, OpenRouter). Cloud providers are off by default. If you pick one for a role, item text and your project profiles are sent to that provider, and the app marks that role "leaves this machine".
+You can also connect LM Studio or any OpenAI-compatible server (llama.cpp, vLLM, Jan, LocalAI), or a cloud provider that speaks the same API: OpenAI or OpenRouter. Native Anthropic and Google Gemini support comes next. Cloud providers are off by default. If you pick one for a role, item text and your project profiles are sent to that provider, and the app marks that role "leaves this machine".
 
 API keys are stored in your operating system's keychain (macOS Keychain, Windows Credential Manager or the Linux Secret Service). They are never written to `config.yaml`, the database or the logs, and the app only ever shows the first and last four characters. An environment variable such as `ANTHROPIC_API_KEY` overrides a stored key.
 

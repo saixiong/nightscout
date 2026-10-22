@@ -5,6 +5,7 @@ import os
 import time
 from datetime import date
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 import yaml
@@ -15,7 +16,8 @@ from night_scout.core.config import Config, save_config
 from night_scout.core.db import Store
 from night_scout.core.models import Item, utcnow
 from night_scout.core.pipeline import run_once
-from night_scout.web.app import NOT_YET_ROUTES, create_app, safe_url
+from night_scout.web import app as web
+from night_scout.web.app import create_app, safe_url
 
 from .test_pipeline import PROFILE, _seed, fake_llm
 
@@ -424,12 +426,166 @@ def test_guide_has_no_chat(env) -> None:
     assert text.startswith("# What Night Scout does") and "chat" not in text.lower()
 
 
-@pytest.mark.parametrize(("method", "route"), NOT_YET_ROUTES)
-def test_not_yet_endpoints_return_501(env, method: str, route: str) -> None:
+# -- sources: toggle and add ---------------------------------------------------------------
+def test_add_and_toggle_source(env) -> None:
+    client, *_rest, config_path = env
+    r = client.post("/api/sources/add", json={"type": "hackernews", "value": "mcp"})
+    assert r.status_code == 200, r.text
+    key = next(x["key"] for x in r.json()["catalog"] if "mcp" in x["key"])
+    assert client.post("/api/sources/toggle", json={"key": key, "enabled": False}).json()["ok"]
+    assert key in yaml.safe_load(config_path.read_text())["sources"]["disabled"]
+    cat = client.get("/api/sources").json()["catalog"]
+    assert next(x for x in cat if x["key"] == key)["enabled"] is False
+    assert (
+        client.post("/api/sources/toggle", json={"key": "nope:x", "enabled": False}).status_code
+        == 400
+    )
+    assert (
+        client.post("/api/sources/add", json={"type": "x", "value": "@someone"}).status_code == 400
+    )
+
+
+def test_source_writes_need_csrf(env) -> None:
     client, *_ = env
-    url = route.replace("{idea_id}", "1").replace("{provider_id}", "ollama")
-    r = client.request(method, url, json={} if method != "GET" else None)
-    assert r.status_code == 501 and r.json() == {"error": "not available yet"}
+    r = client.post(
+        "/api/sources/add",
+        json={"type": "hackernews", "value": "mcp"},
+        headers={"X-CSRF-Token": "no"},
+    )
+    assert r.status_code == 403
+
+
+# -- ideas ----------------------------------------------------------------------------------------
+def _idea(cfg) -> int:
+    store = Store(cfg.db_file())
+    try:
+        return store.save_ideas(1, "2026-10-22", [_IdeaLike()])[0]
+    finally:
+        store.close()
+
+
+class _IdeaLike:
+    title = "PDF speed lab"
+    pitch = "Bench it."
+    why_you = "You parse PDFs."
+    first_step = "pip install pypdf"
+    inspired_by: ClassVar[list[int]] = []
+
+    def model_dump(self) -> dict:
+        return {
+            k: getattr(self, k) for k in ("title", "pitch", "why_you", "first_step", "inspired_by")
+        }
+
+
+def test_idea_dismiss_and_start(env, monkeypatch, tmp_path) -> None:
+    client, _, _, cfg, *_ = env
+    iid = _idea(cfg)
+    assert client.post(f"/api/ideas/{iid}/dismiss").json()["ok"]
+    assert client.post("/api/ideas/99999/dismiss").status_code == 404
+    made = tmp_path / "pdf-speed-lab"
+    monkeypatch.setattr(web, "start_project_from_idea", lambda *a, **k: made)
+    monkeypatch.setattr(web, "make_llm", lambda _cfg, _role="judge": object())
+    r = client.post(f"/api/ideas/{iid}/start").json()
+    assert r["ok"] and r["path"].endswith("pdf-speed-lab")
+
+
+# -- providers, keys, roles -----------------------------------------------------------------------
+@pytest.fixture
+def offline(monkeypatch):
+    """No real model server: local probes see nothing; Ollama lists two models."""
+    monkeypatch.setattr(web, "probe", lambda url: None)
+
+
+def test_providers_view_offline(env, offline) -> None:
+    client, *_ = env
+    v = client.get("/api/providers").json()
+    ids = [p["id"] for p in v["providers"]]
+    assert ids[0] == "ollama" and "lmstudio" in ids
+    assert v["providers"][0]["status"] == "offline"
+    assert v["roles"]["judge"].startswith("ollama/")
+
+
+def test_key_roundtrip_never_touches_config(env, offline) -> None:
+    client, *_rest, config_path = env
+    secret = "sk-or-v1-0123456789abcdef0123"
+    r = client.put("/api/keys/openrouter", json={"key": secret, "model": "google/gemma-3-27b-it"})
+    assert r.status_code == 200, r.text
+    assert secret not in config_path.read_text()
+    p = next(p for p in client.get("/api/providers").json()["providers"] if p["id"] == "openrouter")
+    assert p["key"]["configured"] and p["key"]["masked"].startswith("sk-o")
+    assert secret not in json.dumps(p)
+    ref = "openrouter/google/gemma-3-27b-it"
+    assert client.put("/api/roles", json={"judge": ref}).json()["roles"]["judge"] == ref
+    assert client.put("/api/roles", json={"embed": ref}).status_code == 400  # embeddings stay local
+    assert client.delete("/api/keys/openrouter").json()["ok"]
+    roles = client.get("/api/providers").json()["roles"]
+    assert roles["judge"].startswith("ollama/")  # back to Gemma
+    assert client.put("/api/keys/ollama", json={"key": "x" * 20}).status_code == 400
+    assert client.put("/api/keys/nope", json={"key": "x" * 20}).status_code == 404
+
+
+def test_custom_provider_and_models(env, offline) -> None:
+    client, *_ = env
+    r = client.post(
+        "/api/providers",
+        json={"name": "llama.cpp box", "base_url": "http://127.0.0.1:8080/v1", "model": "gemma-4"},
+    )
+    assert r.status_code == 200, r.text
+    pid = r.json()["id"]
+    p = next(p for p in client.get("/api/providers").json()["providers"] if p["id"] == pid)
+    assert [m["name"] for m in p["models"]] == ["gemma-4"]
+    bad = client.post("/api/providers", json={"name": "x", "base_url": "ftp://nope"})
+    assert bad.status_code == 400
+    plain = client.post("/api/providers", json={"name": "y", "base_url": "http://example.com/v1"})
+    assert plain.status_code == 400  # remote hosts must use https
+    assert (
+        client.put("/api/providers/lmstudio/models", json={"model": "gemma 3"}).status_code == 400
+    )
+    assert client.put(
+        "/api/providers/lmstudio/models", json={"model": "google/gemma-3-12b"}
+    ).json()["ok"]
+
+
+def test_provider_test_route(env, monkeypatch) -> None:
+    client, *_ = env
+
+    class Step:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def to_dict(self) -> dict:
+            return {"name": self.name, "ok": True, "detail": ""}
+
+    monkeypatch.setattr(
+        web, "test_provider", lambda cfg, pid: [Step("Health"), Step("Auth"), Step("Chat")]
+    )
+    steps = client.post("/api/providers/ollama/test").json()["steps"]
+    assert [s["name"] for s in steps] == ["Health", "Auth", "Chat"]
+    assert client.post("/api/providers/lmstudio/test").status_code == 200  # preset, not added yet
+    assert client.post("/api/providers/nope/test").status_code == 404
+
+
+def test_ollama_pull_progress(env, monkeypatch) -> None:
+    client, *_ = env
+
+    class Prog:
+        def __init__(self, status: str, percent: float | None) -> None:
+            self.status, self.percent = status, percent
+
+    def fake_pull(cfg, name):
+        if not name.startswith("gemma"):
+            raise ValueError("bad name")
+        return iter([Prog("pulling", 50.0), Prog("verifying", 100.0)])
+
+    monkeypatch.setattr(web, "ollama_pull", fake_pull)
+    assert client.post("/api/ollama/pull", json={"name": "rm -rf"}).status_code == 400
+    assert client.post("/api/ollama/pull", json={"name": "gemma4:e4b"}).json()["ok"]
+    for _ in range(50):
+        s = client.get("/api/ollama/pull", params={"name": "gemma4:e4b"}).json()
+        if s["state"] == "done":
+            break
+        time.sleep(0.02)
+    assert s["state"] == "done" and s["percent"] == 100.0
 
 
 def test_concurrent_reads_do_not_share_cursors(env) -> None:

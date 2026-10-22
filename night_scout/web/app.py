@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import quote, urlsplit
 
+import httpx
 import yaml
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -32,16 +33,28 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .. import __version__
 from ..core import actions
-from ..core.config import Config, Sources, load_config, save_config
+from ..core.config import Config, ProviderConfig, Sources, load_config, save_config, split_ref
 from ..core.db import Store
+from ..core.discover import add_source
 from ..core.feedback import MUTE_AT, compute_weights
-from ..core.llm import LLM
+from ..core.http import PoliteClient, SourceError
+from ..core.ideas import start_project_from_idea
+from ..core.llm import LLM, ModelError
 from ..core.models import utcnow
 from ..core.profile import build_profile_file, load_profile
-from ..core.providers import make_llm
+from ..core.providers import PRESETS, make_llm, ollama_models, ollama_pull, preset, test_provider
 from ..core.safety import check_commands
 from ..core.sandbox import Plan, choose_mode
-from ..core.sources import all_tasks
+from ..core.secrets import (
+    SecretStoreUnavailable,
+    delete_key,
+    get_key,
+    key_source,
+    keychain_available,
+    masked,
+    set_key,
+)
+from ..core.sources import all_tasks, set_source_enabled
 
 log = logging.getLogger(__name__)
 HERE = Path(__file__).parent
@@ -55,20 +68,51 @@ PROFILE_LISTS = ("stack", "key_dependencies", "interests", "would_want_to_know")
 
 # Endpoints whose backend lands with the pipeline (B) and providers (C) tracks. The UI is
 # built for them already and shows a calm "not wired yet" until they answer.
-NOT_YET_ROUTES: list[tuple[str, str]] = [
-    ("POST", "/api/sources/toggle"),
-    ("POST", "/api/sources/add"),
-    ("POST", "/api/ideas/{idea_id}/dismiss"),
-    ("POST", "/api/ideas/{idea_id}/start"),
-    ("GET", "/api/providers"),
-    ("POST", "/api/providers"),
-    ("POST", "/api/providers/{provider_id}/test"),
-    ("PUT", "/api/keys/{provider_id}"),
-    ("DELETE", "/api/keys/{provider_id}"),
-    ("PUT", "/api/roles"),
-    ("GET", "/api/ollama/models"),
-    ("POST", "/api/ollama/pull"),
-]
+NOT_YET_ROUTES: list[tuple[str, str]] = []  # every v2 endpoint is wired
+
+
+class ToggleBody(BaseModel):
+    key: str
+    enabled: bool
+
+
+class AddSourceBody(BaseModel):
+    type: str
+    value: str
+
+
+class KeyBody(BaseModel):
+    key: str
+    model: str | None = None
+
+
+class NewProvider(BaseModel):
+    name: str
+    base_url: str
+    api_key: str | None = None
+    model: str | None = None
+
+
+class RolesBody(BaseModel):
+    judge: str | None = None
+    fallback: str | None = None
+    embed: str | None = None
+
+
+class PullBody(BaseModel):
+    name: str
+
+
+class ModelBody(BaseModel):
+    model: str
+
+
+def probe(url: str) -> httpx.Response | None:
+    """One quick GET to a local model server; None when nothing answers."""
+    try:
+        return httpx.get(url, timeout=1.5)
+    except httpx.HTTPError:
+        return None
 
 
 def safe_url(url: str | None) -> str | None:
@@ -881,6 +925,315 @@ def create_app(
     @app.get("/api/projects/rebuild")
     def rebuild_status() -> Any:
         return jobs.get("profile")
+
+    # -- sources: toggle and add -------------------------------------------------------------
+    def save_cfg(cfg_new: Config) -> None:
+        save_config(cfg_new, config_path)
+        state["cfg"] = load_config(config_path)
+        state.pop("llm", None)  # roles or providers may have changed
+
+    @app.post("/api/sources/toggle")
+    def toggle_source(body: ToggleBody) -> Any:
+        c = load_config(config_path)
+        try:
+            set_source_enabled(c, body.key, body.enabled)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        save_cfg(c)
+        return {"ok": True, "key": body.key, "enabled": body.enabled}
+
+    @app.post("/api/sources/add")
+    def add_source_route(body: AddSourceBody) -> Any:
+        c = load_config(config_path)
+        try:
+            with PoliteClient(c.contact) as client:
+                label = add_source(c, body.type, body.value.strip()[:500], client)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        except SourceError as e:
+            raise HTTPException(400, f"Couldn't reach it: {e}") from e
+        save_cfg(c)
+        return {"ok": True, "label": label, "catalog": catalog()}
+
+    # -- ideas ----------------------------------------------------------------------------------
+    @app.post("/api/ideas/{idea_id}/dismiss")
+    def dismiss_idea(idea_id: int) -> Any:
+        if store.idea(idea_id) is None:
+            raise HTTPException(404, "No such idea")
+        store.set_idea_status(idea_id, "dismissed")
+        return {"ok": True}
+
+    @app.post("/api/ideas/{idea_id}/start")
+    def start_idea(idea_id: int) -> Any:
+        try:
+            path = start_project_from_idea(
+                state["cfg"], store, llm(), idea_id, config_path=config_path
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        except ModelError as e:
+            raise HTTPException(503, f"The model couldn't profile the new project: {e}") from e
+        state["cfg"] = load_config(config_path)
+        return {"ok": True, "path": pretty_path(str(path))}
+
+    # -- providers, keys, roles ----------------------------------------------------------------
+    def is_local(p: ProviderConfig) -> bool:
+        return p.kind == "ollama" or urlsplit(p.base_url).hostname in (
+            "127.0.0.1",
+            "localhost",
+            "::1",
+        )
+
+    def quick_status(p: ProviderConfig) -> tuple[str, str | None]:
+        """connected/offline for local servers (cheap); 'unknown' for remote ones."""
+        if not is_local(p):
+            return "unknown", None
+        url = p.base_url.rstrip("/") + ("/api/version" if p.kind == "ollama" else "/models")
+        r = probe(url)
+        if r is None or r.status_code >= 500:
+            return "offline", None
+        version = None
+        if p.kind == "ollama" and r.status_code == 200:
+            try:
+                version = r.json().get("version")
+            except ValueError:
+                version = None
+        return "connected", version
+
+    def role_labels(c: Config) -> dict[str, str]:
+        names = {"judge": "Judge · Research", "fallback": "Fallback", "embed": "Embeddings"}
+        out: dict[str, str] = {}
+        for role, label in names.items():
+            ref = c.role_ref(role)  # type: ignore[arg-type]
+            if ref:
+                out[ref] = f"{out[ref]} · {label}" if ref in out else label
+        return out
+
+    def providers_view() -> dict[str, Any]:
+        c = state["cfg"]
+        labels = role_labels(c)
+        try:
+            have_keychain = keychain_available()
+        except Exception:
+            have_keychain = False
+        out = []
+        ids = [p.id for p in c.all_providers()]
+        if "lmstudio" not in ids:
+            ids.append("lmstudio")  # always offer the LM Studio card
+        for pid in ids:
+            p = c.provider(pid) if pid in {x.id for x in c.all_providers()} else preset(pid)
+            status, version = quick_status(p)
+            models: list[dict[str, Any]] = []
+            if p.kind == "ollama" and status == "connected":
+                try:
+                    for m in ollama_models(c, p.id):
+                        models.append(
+                            {
+                                "name": m.name,
+                                "size": m.size,
+                                "params": m.parameter_size,
+                                "quant": m.quantization,
+                                "role": labels.get(f"{p.id}/{m.name}", ""),
+                            }
+                        )
+                except ModelError:
+                    status = "offline"
+            else:
+                models = [{"name": m, "role": labels.get(f"{p.id}/{m}", "")} for m in p.models]
+            key = None
+            if p.kind != "ollama" and have_keychain:
+                src = key_source(p.id, p.api_key_env)
+                if src:
+                    key = {
+                        "configured": True,
+                        "source": src,
+                        "masked": masked(get_key(p.id, p.api_key_env)),
+                    }
+            out.append(
+                {
+                    "id": p.id,
+                    "kind": p.kind,
+                    "name": p.name or p.id,
+                    "base_url": p.base_url,
+                    "status": status,
+                    "version": version,
+                    "models": models,
+                    "key": key,
+                    "local": is_local(p),
+                    "configured": pid in {x.id for x in c.all_providers()},
+                }
+            )
+        roles = {r: c.role_ref(r) for r in ("judge", "fallback", "embed")}  # type: ignore[misc]
+        return {"providers": out, "roles": roles, "keychain": have_keychain}
+
+    @app.get("/api/providers")
+    def get_providers() -> Any:
+        return providers_view()
+
+    def ensure_provider(c: Config, pid: str) -> ProviderConfig:
+        for p in c.providers:
+            if p.id == pid:
+                return p
+        if pid in PRESETS:
+            p = preset(pid)
+            c.providers.append(p)
+            return p
+        if pid in {x.id for x in c.all_providers()}:  # the built-in Ollama provider
+            return c.provider(pid)
+        raise HTTPException(404, f"No provider {pid!r}")
+
+    @app.put("/api/keys/{provider_id}")
+    def put_key(provider_id: str, body: KeyBody) -> Any:
+        c = load_config(config_path)
+        p = ensure_provider(c, provider_id)
+        if p.kind == "ollama":
+            raise HTTPException(400, "Ollama doesn't use an API key.")
+        if body.model:
+            m = body.model.strip()
+            if not m or len(m) > 200 or any(ch.isspace() for ch in m):
+                raise HTTPException(400, "That model name doesn't look right.")
+            if m not in p.models:
+                p.models.append(m)
+        try:
+            set_key(provider_id, body.key)
+        except SecretStoreUnavailable as e:
+            raise HTTPException(503, str(e)) from e
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        save_cfg(c)
+        return {"ok": True}
+
+    @app.delete("/api/keys/{provider_id}")
+    def del_key(provider_id: str) -> Any:
+        c = load_config(config_path)
+        try:
+            delete_key(provider_id)
+        except SecretStoreUnavailable as e:
+            raise HTTPException(503, str(e)) from e
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        for role in ("judge", "fallback", "chat", "embed"):  # roles on it go back to Gemma
+            ref = getattr(c.roles, role)
+            if ref and ref.split("/", 1)[0] == provider_id:
+                setattr(c.roles, role, None)
+        save_cfg(c)
+        return {"ok": True}
+
+    @app.post("/api/providers")
+    def add_provider(body: NewProvider) -> Any:
+        c = load_config(config_path)
+        base = "".join(ch if ch.isalnum() else "-" for ch in body.name.lower()).strip("-")[:24]
+        pid, n = base or "custom", 2
+        taken = {p.id for p in c.all_providers()} | set(PRESETS)
+        while pid in taken:
+            pid, n = f"{base[:20]}-{n}", n + 1
+        try:
+            p = ProviderConfig(
+                id=pid,
+                kind="openai_compatible",
+                name=body.name.strip()[:60],
+                base_url=body.base_url.strip(),
+                models=[body.model.strip()] if body.model and body.model.strip() else [],
+            )
+        except ValidationError as e:
+            raise HTTPException(400, "; ".join(str(err["msg"]) for err in e.errors())[:300]) from e
+        if body.api_key and body.api_key.strip():
+            try:
+                set_key(pid, body.api_key)
+            except SecretStoreUnavailable as e:
+                raise HTTPException(503, str(e)) from e
+        c.providers.append(p)
+        save_cfg(c)
+        return {"ok": True, "id": pid}
+
+    @app.put("/api/providers/{provider_id}/models")
+    def add_provider_model(provider_id: str, body: ModelBody) -> Any:
+        c = load_config(config_path)
+        p = ensure_provider(c, provider_id)
+        if p.kind == "ollama":
+            raise HTTPException(400, "Ollama lists its own models; pull one instead.")
+        m = body.model.strip()
+        if not m or len(m) > 200 or any(ch.isspace() for ch in m):
+            raise HTTPException(400, "That model name doesn't look right.")
+        if m not in p.models:
+            p.models.append(m)
+        save_cfg(c)
+        return {"ok": True}
+
+    @app.post("/api/providers/{provider_id}/test")
+    def test_provider_route(provider_id: str) -> Any:
+        c = state["cfg"]
+        known = {p.id for p in c.all_providers()}
+        if provider_id not in known and provider_id not in PRESETS:
+            raise HTTPException(404, f"No provider {provider_id!r}")
+        if provider_id not in known:  # e.g. LM Studio before it's added: test the preset
+            c = c.model_copy(deep=True)
+            c.providers.append(preset(provider_id))
+        steps = test_provider(c, provider_id)
+        return {"steps": [s.to_dict() for s in steps]}
+
+    @app.put("/api/roles")
+    def put_roles(body: RolesBody) -> Any:
+        c = load_config(config_path)
+        for role, ref in body.model_dump(exclude_none=True).items():
+            try:
+                pid, _model = split_ref(ref)
+                p = c.provider(pid)
+            except (ValueError, KeyError) as e:
+                raise HTTPException(400, str(e)) from e
+            if role == "embed" and not is_local(p):
+                raise HTTPException(400, "Embeddings stay on this machine.")
+            setattr(c.roles, role, ref)
+        save_cfg(c)
+        return {
+            "ok": True,
+            "roles": {r: state["cfg"].role_ref(r) for r in ("judge", "fallback", "embed")},
+        }  # type: ignore[misc]
+
+    # -- ollama models and pull ---------------------------------------------------------------
+    pulls: dict[str, dict[str, Any]] = {}
+
+    @app.get("/api/ollama/models")
+    def get_ollama_models() -> Any:
+        try:
+            ms = ollama_models(state["cfg"])
+        except ModelError as e:
+            raise HTTPException(503, str(e)) from e
+        labels = role_labels(state["cfg"])
+        return {
+            "models": [
+                {
+                    "name": m.name,
+                    "size": m.size,
+                    "params": m.parameter_size,
+                    "quant": m.quantization,
+                    "role": labels.get(f"ollama/{m.name}", ""),
+                }
+                for m in ms
+            ]
+        }
+
+    @app.post("/api/ollama/pull")
+    def start_pull(body: PullBody) -> Any:
+        name = body.name.strip()
+        try:
+            stream = ollama_pull(state["cfg"], name)  # validates the name now
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        pulls[name] = {"status": "starting", "percent": None}
+
+        def work() -> None:
+            for prog in stream:
+                pulls[name] = {"status": prog.status, "percent": prog.percent}
+            pulls[name] = {"status": "success", "percent": 100.0}
+
+        started = jobs.start(f"pull:{name}", work)
+        return {"ok": True, "started": started, "name": name}
+
+    @app.get("/api/ollama/pull")
+    def pull_status(name: str) -> Any:
+        job = jobs.get(f"pull:{name}")
+        return {**job, **pulls.get(name, {})}
 
     # -- not wired yet --------------------------------------------------------------------
     def not_yet() -> JSONResponse:

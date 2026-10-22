@@ -89,10 +89,10 @@ NS.startTour = startTour;
 /* ================= SETTINGS → PROVIDERS ================= */
 /* Cloud presets: all speak the OpenAI-compatible API; keys go to the OS keychain. */
 const CLOUD = [
-  { id: "anthropic", name: "Anthropic", tile: "A", env: "ANTHROPIC_API_KEY", url: "https://console.anthropic.com/settings/keys" },
-  { id: "openai", name: "OpenAI", tile: "◎", env: "OPENAI_API_KEY", url: "https://platform.openai.com/api-keys" },
-  { id: "google", name: "Google Gemini", tile: "G", env: "GEMINI_API_KEY", url: "https://aistudio.google.com/apikey" },
-  { id: "openrouter", name: "OpenRouter", tile: "⇄", env: "OPENROUTER_API_KEY", url: "https://openrouter.ai/keys" },
+  { id: "openai", name: "OpenAI", tile: "◎", env: "OPENAI_API_KEY", url: "https://platform.openai.com/api-keys", ph: "a model id, e.g. from platform.openai.com/docs/models" },
+  { id: "openrouter", name: "OpenRouter", tile: "⇄", env: "OPENROUTER_API_KEY", url: "https://openrouter.ai/keys", ph: "e.g. google/gemma-3-27b-it" },
+  { id: "anthropic", name: "Anthropic", tile: "A", soon: true },
+  { id: "google", name: "Google Gemini", tile: "G", soon: true },
 ];
 const ROLES = [
   ["judge", "Judge items & write briefs", "Scores every item for every project, proposes actions, writes research briefs."],
@@ -165,7 +165,7 @@ function roleOptions(role, val) {
   const opt = (p, m) => { const v = `${p.id}/${m.name}`; return `<option value="${esc(v)}" ${v === val ? "selected" : ""}>${esc(p.id === "ollama" ? m.name : v)}</option>`; };
   const groups = local.filter(p => modelsOf(p).length).map(p => `<optgroup label="${esc(p.id === "ollama" ? `On ${B().platform === "darwin" ? "this Mac" : "this machine"} · Ollama` : p.name)}">${modelsOf(p).map(m => opt(p, m)).join("")}</optgroup>`).join("");
   const cl = role === "embed" ? "" : cloud.filter(p => modelsOf(p).length).map(p => `<optgroup label="Cloud · leaves this machine">${modelsOf(p).map(m => opt(p, m)).join("")}</optgroup>`).join("");
-  const locked = role === "embed" ? [] : CLOUD.filter(c => !PV.providers.some(p => p.id === c.id && p.key?.configured)).map(c => c.name);
+  const locked = role === "embed" ? [] : CLOUD.filter(c => !c.soon && !PV.providers.some(p => p.id === c.id && p.key?.configured)).map(c => c.name);
   const known = PV.providers.some(p => modelsOf(p).some(m => `${p.id}/${m.name}` === val));
   return (known ? "" : `<option value="${esc(val)}" selected>${esc(val)}</option>`) + groups + cl +
     (locked.length ? `<optgroup label="Add a key to use">${locked.map(n => `<option disabled>${esc(n)}</option>`).join("")}</optgroup>` : "");
@@ -204,8 +204,9 @@ function renderProviders() {
     </section>
     <section class="pcard prov">
       <div class="prow"><span class="tile">LM</span><div class="pmain"><div class="pname">LM Studio <span class="badge local">Local</span>${lm ? statusBadge(lm) : `<span class="badge off">Not added</span>`}</div>
-        <div class="muted small mono">${esc(lm?.base_url || "http://127.0.0.1:1234/v1")} · OpenAI-compatible</div></div>
+        <div class="muted small mono">${esc(lm?.base_url || "http://127.0.0.1:1234/v1")} · OpenAI-compatible${modelsOf(lm || {}).length ? ` · ${modelsOf(lm).map(m => esc(m.name)).join(", ")}` : ""}</div></div>
         <button class="btn ghost" data-test="lmstudio">Test</button></div>
+      <div class="addform mt10"><input type="text" id="lmModel" placeholder="Model loaded in LM Studio, e.g. google/gemma-3-12b"><button class="btn" id="lmAdd">Offer for roles</button></div>
       <div class="testline" id="t-lmstudio"></div>
     </section>
     ${custom.map(c => `<section class="pcard prov"><div class="prow"><span class="tile">⚙</span><div class="pmain"><div class="pname">${esc(c.name)} <span class="badge local">Custom</span>${statusBadge(c)}</div>
@@ -213,11 +214,15 @@ function renderProviders() {
 
     <h4 class="sec-h mt22">Cloud · optional</h4>
     ${CLOUD.map(p => { const sp = prov(p.id), k = sp?.key?.configured ? sp.key : null, open = ST.keyOpen === p.id;
+      if (p.soon) return `<section class="pcard prov soon"><div class="prow"><span class="tile">${esc(p.tile)}</span><div class="pmain">
+        <div class="pname">${esc(p.name)} <span class="badge off">After the contest</span></div>
+        <div class="muted small">A native ${esc(p.name)} client is next on the list. Until then, OpenRouter reaches many of the same models.</div></div></div></section>`;
       return `<section class="pcard prov"><div class="prow"><span class="tile">${esc(p.tile)}</span><div class="pmain">
         <div class="pname">${esc(p.name)} ${k ? `<span class="badge ok">Configured</span>` : `<span class="badge off">Not configured</span>`}</div>
         ${k ? `<div class="small"><span class="keypill mono">${esc(mask(k))}</span> <span class="muted">${k.source === "env" ? `from <code>${esc(p.env)}</code>` : `🔒 in ${esc(keychain())}`}</span></div>` : `<div class="muted small">Sends item text and project profiles to ${esc(p.name)} when you pick it for a role</div>`}</div>
         ${k ? `<button class="btn ghost" data-test="${p.id}">Test</button><button class="btn ghost danger" data-rm="${p.id}">Remove</button><button class="btn" data-key="${p.id}">Update</button>` : `<button class="btn" data-key="${p.id}">Add key</button>`}</div>
         ${open ? `<div class="keyform"><div class="keyin"><input type="password" id="keyVal" placeholder="Enter ${esc(p.name)} API key…" autocomplete="off"><button class="eye" id="eye" title="Show">👁</button></div>
+          <input type="text" id="keyModel" placeholder="Model to offer for roles: ${esc(p.ph || "")}" autocomplete="off">
           <div class="small muted"><a ${NS.ext(p.url)}>Get a key →</a> · Or set env var: <code>${esc(p.env)}</code></div>
           <div class="row"><button class="btn primary" id="keySave">Save to ${esc(keychain())}</button><button class="btn ghost" id="keyCancel">Cancel</button></div></div>` : ""}
         <div class="testline" id="t-${p.id}"></div></section>`; }).join("")}
@@ -244,14 +249,27 @@ function renderProviders() {
     const n = $("#pullName").value.trim(); if (!n) return $("#pullName").focus();
     pull.disabled = true;
     const r = await api("POST", "/api/ollama/pull", { name: n });
-    pull.disabled = false;
-    if (!r.ok) return failToast(r, "Pulling models from here");
-    const pp = $("#pullProg");
-    if (pp) { pp.innerHTML = `<div class="pullbar"><span class="mono small">${esc(n)}</span><span class="meter"><i data-w="100"></i></span><span class="mono small">done</span></div>`; fx(pp); }
-    toast(`<b>Pulled ${esc(n)}.</b> It now shows up in the model pickers.`);
-    PV = null; NS.pages.settings("providers");
+    if (!r.ok) { pull.disabled = false; return failToast(r, "Pulling models from here"); }
+    const draw = (pctv, label) => { const pp = $("#pullProg"); if (!pp) return;
+      pp.innerHTML = `<div class="pullbar"><span class="mono small">${esc(n)}</span><span class="meter"><i data-w="${Math.round(pctv || 0)}"></i></span><span class="mono small">${esc(label)}</span></div>`; fx(pp); };
+    draw(0, "starting");
+    const poll = async () => {
+      const s = await api("GET", `/api/ollama/pull?name=${encodeURIComponent(n)}`);
+      const d = s.data || {};
+      if (d.state === "error") { pull.disabled = false; draw(0, "failed"); return toast(`<b>Pull failed.</b> ${esc(d.error || "")}`); }
+      if (d.state === "done") { draw(100, "done"); pull.disabled = false; toast(`<b>Pulled ${esc(n)}.</b> It now shows up in the model pickers.`); PV = null; return setTimeout(() => NS.pages.settings("providers"), 800); }
+      draw(d.percent, d.percent != null ? `${Math.round(d.percent)}%` : (d.status || "…"));
+      setTimeout(poll, 1000);
+    };
+    setTimeout(poll, 800);
   };
   $$("[data-test]", pane).forEach(b => b.onclick = () => runTest(b.dataset.test));
+  $("#lmAdd").onclick = async () => {
+    const m = $("#lmModel").value.trim(); if (!m) return $("#lmModel").focus();
+    const r = await api("PUT", "/api/providers/lmstudio/models", { model: m });
+    if (!r.ok) return failToast(r, "Adding models from here");
+    toast(`<b>${esc(m)}</b> is now in the model pickers.`); PV = null; NS.pages.settings("providers");
+  };
   $$("[data-key]", pane).forEach(b => b.onclick = () => { ST.keyOpen = b.dataset.key; renderProviders(); $("#keyVal")?.focus(); });
   $$("[data-rm]", pane).forEach(b => b.onclick = async () => {
     const r = await api("DELETE", `/api/keys/${encodeURIComponent(b.dataset.rm)}`);
@@ -266,7 +284,8 @@ function renderProviders() {
     ks.onclick = async () => {
       const v = input.value.trim(); if (v.length < 12) return toast("That doesn't look like an API key.");
       const id = ST.keyOpen;
-      const r = await api("PUT", `/api/keys/${encodeURIComponent(id)}`, { key: v });
+      const model = ($("#keyModel")?.value || "").trim();
+      const r = await api("PUT", `/api/keys/${encodeURIComponent(id)}`, model ? { key: v, model } : { key: v });
       input.value = "";
       if (!r.ok) return failToast(r, "Saving keys from here");
       ST.keyOpen = null; PV = null; NS.pages.settings("providers"); setTimeout(() => runTest(id), 600);
