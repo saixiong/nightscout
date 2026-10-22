@@ -101,7 +101,7 @@ const ROLES = [
   ["fallback", "Fallback judge", "Used if the main model fails or times out."],
   ["embed", "Embeddings", "Finds near-duplicates and pre-filters items. Local only."],
 ];
-const NAV = [["setup", "✨", "Setup", "Walk through it all again"], ["providers", "🔌", "AI Providers", "Models and API keys"], ["schedule", "🌙", "Schedule", "When the scout runs"], ["sandbox", "🧪", "Try-it sandbox", "Safety limits"], ["privacy", "🔒", "Data & privacy", "What's stored where"], ["about", "ⓘ", "About", "Version and licence"]];
+const NAV = [["setup", "✨", "Setup", "Walk through it all again"], ["providers", "🔌", "AI Providers", "Models and API keys"], ["chat", "✦", "Chat & search", "Web search provider"], ["schedule", "🌙", "Schedule", "When the scout runs"], ["sandbox", "🧪", "Try-it sandbox", "Safety limits"], ["privacy", "🔒", "Data & privacy", "What's stored where"], ["about", "ⓘ", "About", "Version and licence"]];
 const keychain = () => ({ darwin: "macOS Keychain", win32: "Windows Credential Manager" }[B().platform] || "system keychain");
 
 /* What the page shows until GET /api/providers answers: Ollama with the models from config.yaml. */
@@ -140,6 +140,7 @@ NS.pages.settings = (sec = "providers") => {
   </div>`;
   wireTilt($(".stage"));
   if (location.hash.split("/").length > 2) document.body.classList.add("card-open");
+  if (sec === "chat") { SV = null; return renderChatSearch(); }
   if (sec !== "providers") return renderOther(sec);
   renderProviders();
 };
@@ -158,6 +159,100 @@ function renderOther(sec) {
   $("#setPane").innerHTML = `<a class="back" href="#/settings">‹ Settings</a><h2 class="serif mt0">${esc(title)}</h2>
     <dl class="kv">${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl>
     <p class="muted small mt22">These live in <code>config.yaml</code> today${sec === "sandbox" ? " (sandbox: prefer, timeout_s, container_image)" : sec === "schedule" ? " (schedule: time)" : ""}.</p>`;
+}
+
+/* ================= SETTINGS → CHAT & SEARCH ================= */
+let SV = null; // GET /api/search
+const SS = { provider: "none", url: "", keyOpen: false, dirty: false };
+const SEARCH_OPTS = [
+  ["none", "Off", "Gemma uses last night's items, pages it reads, YouTube transcripts and Hacker News. The web search tool isn't offered."],
+  ["searxng", "SearXNG", "Your own SearXNG instance. No key. Gemma's search queries go to that instance and the engines it asks."],
+  ["brave", "Brave Search API", "Brave's search API with your key (it has a free tier). Gemma's search queries go to Brave."],
+];
+async function renderChatSearch() {
+  const pane = $("#setPane"); if (!pane) return;
+  if (!SV) {
+    pane.innerHTML = `<a class="back" href="#/settings">‹ Settings</a><h2 class="serif mt0">Chat &amp; search</h2><p class="loading">Loading…</p>`;
+    const r = await api("GET", "/api/search");
+    if (!$("#setPane") || location.hash.split("/")[2] !== "chat") return;
+    if (!r.ok) { $("#setPane").innerHTML = `<a class="back" href="#/settings">‹ Settings</a><h2 class="serif mt0">Chat &amp; search</h2><p class="muted">${esc(r.error)}</p>`; return; }
+    SV = r.data; Object.assign(SS, { provider: SV.provider, url: SV.searxng_url || "", keyOpen: false, dirty: false });
+  }
+  const m = SV.chat_model || {}, k = SV.brave, here = B().platform === "darwin" ? "this Mac" : "this machine";
+  const opt = ([v, l, d]) => `<label class="srch-opt ${SS.provider === v ? "on" : ""}"><input type="radio" name="srch" value="${v}" ${SS.provider === v ? "checked" : ""}><b>${esc(l)}</b><small>${esc(d)}</small></label>`;
+  const brave = SS.provider === "brave" || k?.configured ? `<div class="mt12"><b class="small">Brave Search API key</b>
+      ${k?.configured ? `<div class="small mt6"><span class="keypill mono">${esc(k.masked)}</span> <span class="muted">🔒 in ${esc(keychain())}</span>
+        <button class="btn ghost" id="bkUpd">Replace</button> <button class="btn ghost danger" id="bkRm">Remove</button></div>` : k?.unreadable ? `<p class="small muted m-4">Couldn't read the ${esc(keychain())}. Is it locked?</p>` : ""}
+      ${!k?.configured || SS.keyOpen ? `<div class="srch-key"><input type="password" id="bkVal" placeholder="Paste your Brave Search API key" autocomplete="off"><button class="btn" id="bkSave">Save to ${esc(keychain())}</button></div>
+        <p class="small muted m-4"><a ${NS.ext("https://brave.com/search/api/")}>Get a key →</a> · It's stored in the ${esc(keychain())} and only ever shown masked.</p>` : ""}</div>` : "";
+  pane.innerHTML = `<a class="back" href="#/settings">‹ Settings</a>
+    <div class="big-head"><div><h2 class="serif m0">Chat &amp; search</h2>
+      <p class="muted m-4">✦ Ask Gemma answers questions about a Digest or one story. It can search last night's items, read web pages, pull YouTube transcripts and search Hacker News. Web search is optional.</p></div></div>
+    <section class="pcard"><h4 class="sec-h">Chat model</h4>
+      <p class="m0"><span class="mono">${esc(m.model || "")}</span> · ${m.local ? `on ${here}` : `via ${esc(m.provider || "")}: questions, context and tool results leave this machine`}</p>
+      <p class="muted small m-4">The chat uses the Judge model unless <code>roles.chat</code> is set in <code>config.yaml</code>. Change models in <a href="#/settings/providers">AI Providers → Model roles</a>.</p></section>
+    <section class="pcard"><h4 class="sec-h">Web search</h4>
+      <div class="srch-opts" role="radiogroup" aria-label="Web search provider">${SEARCH_OPTS.map(opt).join("")}</div>
+      ${SS.provider === "searxng" ? `<label class="srch-field">SearXNG address<input type="text" id="sxUrl" placeholder="http://127.0.0.1:8888" value="${esc(SS.url)}" autocomplete="off" spellcheck="false"></label>
+        <p class="muted small m0">The instance must allow JSON output: in its <code>settings.yml</code>, add <code>json</code> under <code>search: formats:</code>, then restart it.</p>` : ""}
+      ${brave}
+      <div class="row mt12"><button class="btn primary" id="srSave">Save</button><button class="btn ghost" id="srTest" ${SV.provider === "none" ? "disabled" : ""} title="${SV.provider === "none" ? "Save a provider first" : "Run one search with the saved settings"}">Test</button>
+        ${SS.dirty ? `<span class="small muted">Unsaved change</span>` : ""}</div>
+      <div class="testline" id="srOut"></div>
+    </section>
+    <section class="pcard lockbox"><b>🔒 What leaves this machine</b>
+      <ul><li>Tool calls run from ${here}. A page is fetched only when Gemma asks for it, and only from public addresses (never your network or this computer).</li>
+      <li>Web search sends Gemma's search words to the provider you pick here; nothing else.</li>
+      <li>The Brave key lives in the ${esc(keychain())}, never in <code>config.yaml</code>, the database or the logs.</li></ul></section>`;
+  $$("input[name=srch]", pane).forEach(r => r.onchange = () => { SS.url = $("#sxUrl")?.value ?? SS.url; SS.provider = r.value; SS.dirty = SS.provider !== SV.provider; renderChatSearch(); });
+  const url = $("#sxUrl"); if (url) url.oninput = () => { SS.url = url.value; };
+  $("#srSave").onclick = saveSearch;
+  $("#srTest").onclick = testSearch;
+  const bk = $("#bkSave");
+  if (bk) {
+    const input = $("#bkVal");
+    bk.onclick = async () => {
+      const v = input.value.trim(); if (v.length < 12) return toast("That doesn't look like a Brave Search API key.");
+      const r = await api("PUT", "/api/search/brave-key", { key: v });
+      input.value = "";
+      if (!r.ok) return failToast(r, "Saving keys from here");
+      SV = { ...SV, brave: r.data.brave }; SS.keyOpen = false; renderChatSearch();
+      toast(`<b>Key saved</b> to the ${esc(keychain())}.${SS.provider === "brave" ? " Press Save to switch web search to Brave." : ""}`);
+    };
+    input.onkeydown = e => { if (e.key === "Enter") bk.click(); };
+  }
+  const up = $("#bkUpd"); if (up) up.onclick = () => { SS.keyOpen = true; renderChatSearch(); $("#bkVal")?.focus(); };
+  const rm = $("#bkRm");
+  if (rm) rm.onclick = async () => {
+    const r = await api("DELETE", "/api/search/brave-key");
+    if (!r.ok) return failToast(r, "Removing keys from here");
+    SV = r.data; Object.assign(SS, { provider: SV.provider, keyOpen: false, dirty: false }); renderChatSearch();
+    toast(`Brave key removed from the ${esc(keychain())}.`);
+  };
+}
+async function saveSearch() {
+  SS.url = $("#sxUrl")?.value ?? SS.url;
+  const body = { provider: SS.provider, searxng_url: (SS.url || "").trim() || null };
+  if (SS.provider === "searxng" && !body.searxng_url) { toast("Enter your SearXNG address first."); return $("#sxUrl")?.focus(); }
+  const r = await api("PUT", "/api/search", body);
+  if (!r.ok) return failToast(r, "Saving search settings");
+  SV = r.data; Object.assign(SS, { provider: SV.provider, url: SV.searxng_url || "", dirty: false });
+  renderChatSearch();
+  const name = SEARCH_OPTS.find(o => o[0] === SV.provider)?.[1] || SV.provider;
+  toast(SV.provider === "none" ? "<b>Web search is off.</b> Gemma won't be offered the tool." : `<b>Saved.</b> Web search uses ${esc(name)}. Testing it now…`);
+  if (SV.provider !== "none") testSearch();
+}
+async function testSearch() {
+  const out = $("#srOut"); if (!out) return;
+  out.innerHTML = `<div class="checks"><span class="now">◌ Searching…</span></div>`;
+  const r = await api("POST", "/api/search/test", {});
+  if (!$("#srOut")) return;
+  if (!r.ok) { out.innerHTML = ""; return failToast(r, "Testing search"); }
+  const d = r.data;
+  out.innerHTML = d.ok
+    ? `<p class="small testmsg good">✓ ${esc(d.count)} result${d.count === 1 ? "" : "s"} for “${esc(d.query)}”.</p>` +
+      (d.results?.length ? `<ul class="srch-res">${d.results.map(x => `<li><a ${NS.ext(x.url)}>${esc(x.title || x.url)}</a></li>`).join("")}</ul>` : "")
+    : `<p class="small testmsg srch-bad">✕ ${esc(d.error)}</p>`;
 }
 
 const modelsOf = p => (p.models || []).map(m => (typeof m === "string" ? { name: m } : m));
