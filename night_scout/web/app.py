@@ -384,6 +384,109 @@ class _SerializedConnection:
         return getattr(self._conn, name)
 
 
+def load_digest_profile(cfg: Config) -> Profile:
+    try:
+        return load_profile(cfg.profile_file())
+    except (FileNotFoundError, OSError, yaml.YAMLError):
+        return Profile(projects=[])
+
+
+def digest_story(
+    store: Store, row: sqlite3.Row, actions_day: set[int], full: bool
+) -> dict[str, Any]:
+    extra = _json(row["extra"], {})
+    judged = row["summary"] is not None
+    outline = _json(row["outline"], []) if judged else []
+    s: dict[str, Any] = {
+        "id": row["id"],
+        "source": row["source"],
+        "source_name": row["source_name"],
+        "title": plain_title(row["title"]),
+        "headline": row["headline"] if judged else None,
+        "url": safe_url(row["url"]),
+        "author": row["author"],
+        "published": row["published_at"],
+        "also_seen": _json(row["also_seen"], []),
+        "video_id": extra.get("video_id") if row["source"] == "youtube" else None,
+        "judged": judged,
+        "topic": row["digest_topic"] if judged else None,
+        "relevance": row["digest_relevance"] if judged else None,
+        "match": max(0.0, min(1.0, float(row["prefilter"] or 0.0))),
+        "summary": row["summary"] if judged else None,
+        "outline": [str(x) for x in outline if isinstance(x, str)][:5],
+        "saved": bool(row["saved_at"]),
+        "vote": store.item_feedback(row["id"]),
+    }
+    if full:
+        s["text"] = (row["text"] or "")[:900]
+    if row["id"] in actions_day and judged and row["impact"] in IMPACTS:
+        s["action"] = {
+            "kind": row["impact"],
+            "project": row["best_project"],
+            "score": row["best_score"],
+            "next_step": row["next_step"],
+        }
+    return s
+
+
+def digest_payload(cfg: Config, store: Store, day: str | None = None) -> dict[str, Any]:
+    """The Digest (by topic) for a night, as GET /api/digest sends it; the latest night when
+    day is None. Listen reads the same payload. Raises ValueError for a malformed day."""
+    days = sorted(set(store.first_seen_days()) | set(store.digest_days()), reverse=True)
+    if day is None:
+        day = days[0] if days else None
+    elif not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+        raise ValueError("day must be YYYY-MM-DD")
+    prof = load_digest_profile(cfg)
+    topics = prof.digest_topics
+    out: dict[str, Any] = {
+        "day": day,
+        "days": days,
+        "topics": prof.topics,
+        "digest_topics": topics,
+        "projects": prof.names,
+        "bar": cfg.thresholds.digest_bar,
+        "max": cfg.thresholds.digest_max,
+        "stories": [],
+        "rest": [],
+        "saved": [],
+        "stats": None,
+        "run": None,
+    }
+    weights = compute_weights(store)
+    saved = store.saved_items()
+    if day is not None:
+        try:
+            start, end = day_window(date.fromisoformat(day))
+        except ValueError as e:
+            raise ValueError("day must be a real date") from e
+        rows = store.items_between(start, end)
+        digest_row = store.digest(day)
+        actions_day = set(_json(digest_row["item_ids"], [])) if digest_row else set()
+        hidden = {r["id"] for r in rows if store.item_feedback(r["id"]) == -1}
+        stories, rest = split_digest(
+            rows, topics, weights, cfg.thresholds.digest_bar, cfg.thresholds.digest_max, hidden
+        )
+        out["stories"] = [digest_story(store, r, actions_day, True) for r in stories]
+        out["rest"] = [digest_story(store, r, actions_day, True) for r in rest]
+        run = None
+        if digest_row and digest_row["run_id"]:
+            run = store.conn.execute(
+                "SELECT * FROM runs WHERE id=?", (digest_row["run_id"],)
+            ).fetchone()
+        elif rows:
+            run = store.conn.execute(
+                "SELECT * FROM runs WHERE id=?", (rows[-1]["run_id"],)
+            ).fetchone()
+        out["run"] = run  # the row; GET /api/digest sends run_dict(row)
+        out["stats"] = {
+            "new": len(rows),
+            "judged": sum(1 for r in rows if r["summary"] is not None),
+        }
+    out["saved"] = [digest_story(store, r, set(), True) for r in saved]
+    return out
+
+
 def create_app(
     cfg: Config,
     config_path: Path,
@@ -785,101 +888,15 @@ def create_app(
 
     # -- the Digest (by topic) ----------------------------------------------------------------
     def digest_profile() -> Profile:
-        try:
-            return load_profile(state["cfg"].profile_file())
-        except (FileNotFoundError, OSError, yaml.YAMLError):
-            return Profile(projects=[])
-
-    def story(row: sqlite3.Row, actions_day: set[int], full: bool) -> dict[str, Any]:
-        extra = _json(row["extra"], {})
-        judged = row["summary"] is not None
-        outline = _json(row["outline"], []) if judged else []
-        s: dict[str, Any] = {
-            "id": row["id"],
-            "source": row["source"],
-            "source_name": row["source_name"],
-            "title": plain_title(row["title"]),
-            "headline": row["headline"] if judged else None,
-            "url": safe_url(row["url"]),
-            "author": row["author"],
-            "published": row["published_at"],
-            "also_seen": _json(row["also_seen"], []),
-            "video_id": extra.get("video_id") if row["source"] == "youtube" else None,
-            "judged": judged,
-            "topic": row["digest_topic"] if judged else None,
-            "relevance": row["digest_relevance"] if judged else None,
-            "match": max(0.0, min(1.0, float(row["prefilter"] or 0.0))),
-            "summary": row["summary"] if judged else None,
-            "outline": [str(x) for x in outline if isinstance(x, str)][:5],
-            "saved": bool(row["saved_at"]),
-            "vote": store.item_feedback(row["id"]),
-        }
-        if full:
-            s["text"] = (row["text"] or "")[:900]
-        if row["id"] in actions_day and judged and row["impact"] in IMPACTS:
-            s["action"] = {
-                "kind": row["impact"],
-                "project": row["best_project"],
-                "score": row["best_score"],
-                "next_step": row["next_step"],
-            }
-        return s
+        return load_digest_profile(state["cfg"])
 
     @app.get("/api/digest")
     def digest_view(day: str | None = None) -> Any:
-        c = state["cfg"]
-        days = sorted(set(store.first_seen_days()) | set(store.digest_days()), reverse=True)
-        if day is None:
-            day = days[0] if days else None
-        elif not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
-            raise HTTPException(400, "day must be YYYY-MM-DD")
-        prof = digest_profile()
-        topics = prof.digest_topics
-        out: dict[str, Any] = {
-            "day": day,
-            "days": days,
-            "topics": prof.topics,
-            "digest_topics": topics,
-            "projects": prof.names,
-            "bar": c.thresholds.digest_bar,
-            "max": c.thresholds.digest_max,
-            "stories": [],
-            "rest": [],
-            "saved": [],
-            "stats": None,
-            "run": None,
-        }
-        weights = compute_weights(store)
-        saved = store.saved_items()
-        if day is not None:
-            try:
-                start, end = day_window(date.fromisoformat(day))
-            except ValueError as e:
-                raise HTTPException(400, "day must be a real date") from e
-            rows = store.items_between(start, end)
-            digest_row = store.digest(day)
-            actions_day = set(_json(digest_row["item_ids"], [])) if digest_row else set()
-            hidden = {r["id"] for r in rows if store.item_feedback(r["id"]) == -1}
-            stories, rest = split_digest(
-                rows, topics, weights, c.thresholds.digest_bar, c.thresholds.digest_max, hidden
-            )
-            out["stories"] = [story(r, actions_day, True) for r in stories]
-            out["rest"] = [story(r, actions_day, True) for r in rest]
-            run = None
-            if digest_row and digest_row["run_id"]:
-                run = store.conn.execute(
-                    "SELECT * FROM runs WHERE id=?", (digest_row["run_id"],)
-                ).fetchone()
-            elif rows:
-                run = store.conn.execute(
-                    "SELECT * FROM runs WHERE id=?", (rows[-1]["run_id"],)
-                ).fetchone()
-            out["run"] = run_dict(run)
-            out["stats"] = {
-                "new": len(rows),
-                "judged": sum(1 for r in rows if r["summary"] is not None),
-            }
-        out["saved"] = [story(r, set(), True) for r in saved]
+        try:
+            out = digest_payload(state["cfg"], store, day)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        out["run"] = run_dict(out["run"])
         return out
 
     @app.get("/api/topics")
@@ -1228,6 +1245,11 @@ def create_app(
     register_chat(
         app, store=store, state=state, config_path=config_path, save_cfg=save_cfg, jobs=jobs
     )
+
+    # Listen to your Digest + Settings → Voice (the optional voice add-on)
+    from .listen_routes import register as register_listen
+
+    register_listen(app, store=store, state=state, config_path=config_path, save_cfg=save_cfg)
 
     @app.post("/api/sources/toggle")
     @config_writer

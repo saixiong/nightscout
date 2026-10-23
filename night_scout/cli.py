@@ -7,8 +7,10 @@ import logging
 import sys
 from pathlib import Path
 
-from .core.config import load_config, save_config, starter_config
+from .core.config import Config, load_config, save_config, starter_config
 from .core.paths import default_config_path
+
+log = logging.getLogger("night_scout.cli")
 
 
 def _pretty(p: Path | str) -> str:
@@ -71,7 +73,48 @@ def cmd_run(args: argparse.Namespace) -> int:
         print("  " + line)
     if result.digest_path:
         print(f"\nDigest: {_pretty(result.digest_path)}")
+    if not args.fetch_only:
+        ready_by_morning(cfg)
     return 0 if result.ok else 1
+
+
+def ready_by_morning(cfg: Config) -> None:
+    """Listen → Ready by morning: record the night's Digest once the run's result is saved,
+    so ▶ Listen starts at once. Best-effort: a failure is logged and changes nothing else
+    (not the run's result, not the exit code). Old recordings are pruned either way."""
+    try:
+        from .core import listen
+
+        listen.prune(cfg)
+        if not cfg.voice.ready_by_morning:
+            return
+        ok, why = listen.check_available()
+        if not ok:
+            log.debug("Ready by morning: voice add-on not available (%s)", why)
+            return
+        from .core.db import Store
+        from .web.app import digest_payload
+
+        store = Store(cfg.db_file())
+        try:
+            digest = digest_payload(cfg, store)
+        finally:
+            store.close()
+        if not digest["day"] or not digest["stories"]:
+            return
+        plan = listen.plan_for(cfg, digest)
+        m = listen.record(cfg, plan)
+        if m.get("status") == "ready":
+            secs = sum(float(c.get("seconds") or 0) for c in m.get("chapters") or [])
+            print(
+                f"Listen: recorded the Digest ({listen.voice_name(plan.voice)}, "
+                f"{plan.stories_count} stories, {int(secs // 60)}:{int(secs % 60):02d}) "
+                f"in {m.get('render_s')} s."
+            )
+        else:
+            log.warning("Ready by morning: recording failed: %s", m.get("error") or m.get("status"))
+    except Exception:
+        log.exception("Ready by morning: couldn't record the Digest")
 
 
 def _port_free(port: int) -> bool:
