@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import html as html_lib
+import logging
 import os
 import re
 from collections.abc import Callable
@@ -69,6 +70,8 @@ _ARXIV_LOWER = {"physics", "cond-mat"}
 _ARXIV_FLAT = {
     "gr-qc", "hep-ex", "hep-lat", "hep-ph", "hep-th", "math-ph", "nucl-ex", "nucl-th", "quant-ph",
 }  # fmt: skip
+
+log = logging.getLogger(__name__)
 
 
 # -- feeds -------------------------------------------------------------------------------
@@ -472,8 +475,10 @@ def _github_repo(repo: str, http: PoliteClient, token_env: str) -> str:
                 repo,
                 hint,
             ) from e
+        log.warning("GitHub check for %s skipped (%s); keeping the name", repo, e)
         return repo
     except ValueError:  # not JSON
+        log.warning("GitHub check for %s skipped (not JSON); keeping the name", repo)
         return repo
     full = data.get("full_name") if isinstance(data, dict) else None
     return full if isinstance(full, str) and _GH_REPO.match(full) else repo
