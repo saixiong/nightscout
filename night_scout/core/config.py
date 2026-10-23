@@ -335,6 +335,36 @@ class SearchConfig(BaseModel):
         return check_searxng_url(v) if v else None
 
 
+# Listen to your Digest: the player's speeds, and the Kokoro voice names config.yaml accepts.
+VOICE_SPEEDS = (0.9, 1.0, 1.25, 1.5)
+_VOICE_ID = re.compile(r"^[ab][fm]_[a-z]{2,20}$")
+
+
+class VoiceConfig(BaseModel):
+    """Listen to your Digest (the optional voice add-on). Speed is the player's starting
+    playback rate; the recording itself is always made at 1×."""
+
+    voice: str = "af_heart"
+    speed: float = 1.0
+    reads: Literal["full", "headlines"] = "full"
+    # Record the Digest right after the nightly run, so Listen starts at once.
+    ready_by_morning: bool = True
+
+    @field_validator("voice")
+    @classmethod
+    def _voice(cls, v: str) -> str:
+        if not _VOICE_ID.match(v):
+            raise ValueError("voice must be a Kokoro English voice id, like af_heart")
+        return v
+
+    @field_validator("speed")
+    @classmethod
+    def _speed(cls, v: float) -> float:
+        if v not in VOICE_SPEEDS:
+            raise ValueError("voice speed must be one of 0.9, 1, 1.25 or 1.5")
+        return v
+
+
 class Config(BaseModel):
     model: ModelConfig = Field(default_factory=ModelConfig)
     # Optional. Without them everything runs on Ollama exactly as `model:` describes.
@@ -347,6 +377,8 @@ class Config(BaseModel):
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
     # Web search for the chat drawer (Settings → Chat & search).
     search: SearchConfig = Field(default_factory=SearchConfig)
+    # Listen to your Digest (Settings → Voice); only used with the voice add-on.
+    voice: VoiceConfig = Field(default_factory=VoiceConfig)
     # Shown to sources in the User-Agent so they can reach you; keep it generic if you like.
     contact: str = "local user"
     data_dir: str | None = None
@@ -437,6 +469,8 @@ def save_config(cfg: Config, path: Path) -> None:
     for key in ("providers", "roles"):
         if not data.get(key):
             data.pop(key, None)
+    if data.get("voice") == VoiceConfig().model_dump(mode="json"):
+        data.pop("voice")
     tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     tmp.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
     os.replace(tmp, path)

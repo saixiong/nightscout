@@ -101,6 +101,7 @@ function render() {
         <h1><em>${words(items.length)}</em> stor${items.length === 1 ? "y" : "ies"}<br>for your topics.</h1>
         <p class="sub">Gemma read ${st.judged} of the ${st.new} new items against your ${topics.length} topic${topics.length === 1 ? "" : "s"}${D.topics.length ? "" : D.projects.length ? " (your project names; add your own topics to sort by them)" : ""}.${D.projects.length ? ` <a href="#/actions">Actions</a> has what to do about your projects.` : ""}</p>
         ${running ? `<p class="runnote">● The scout is out right now · <a href="#/actions">follow it</a></p>` : ""}
+        <div class="listenrow" id="listenRow" hidden></div>
         ${D.days.length > 1 ? `<div class="days">${[...D.days].slice(0, 7).reverse().map(d => `<button data-day="${esc(d)}" class="${d === D.day ? "on" : ""}">${esc(dayShort(d))}</button>`).join("")}</div>` : ""}
       </section>
       <div class="tfilter" id="tfilter">
@@ -137,6 +138,7 @@ function render() {
   $("#editTopics").onclick = () => go("#/digest/topics");
   $("#moreT").onclick = () => go("#/digest/more");
   drawFeed();
+  NS.listen?.status(D.day); // ▶ Listen (voice add-on only): hero row, story buttons, NOW READING
   if (openChat && hasChat()) NS.openChat(NS.chatCtx?.() || { kind: "digest", day: D.day });
 }
 
@@ -173,7 +175,7 @@ function drawFeed(scrollTo) {
     }
   }
   $("#moreT")?.classList.toggle("on", V.view === "rest");
-  watchFeed(); markList();
+  watchFeed(); markList(); NS.listen?.storyButtons();
 }
 
 function story(i) {
@@ -187,6 +189,7 @@ function story(i) {
       ${i.also_seen?.length ? `<span class="buzz" title="Also seen on ${esc(i.also_seen.join(", "))}">also on ${i.also_seen.length} more</span>` : ""}
       <span class="spacer"></span>
       <div class="votes">
+        ${NS.listen?.available() && D.stories.some(x => x.id === i.id) ? `<button class="vote listen" type="button" data-listen="${i.id}" title="Listen to this story">▶ Listen</button>` : ""}
         <button class="vote ${i.saved ? "on" : ""}" data-a="save" data-id="${i.id}" title="${i.saved ? "Saved: click to unsave" : "Save for later"}">🔖</button>
         <button class="vote" data-a="less" data-id="${i.id}" title="Not for me: hide it and rank items like it lower">👎</button>
         <button class="vote" data-a="mute" data-id="${i.id}" title="Mute ${esc(i.source_name)}">🔇</button>

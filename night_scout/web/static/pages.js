@@ -138,7 +138,7 @@ const ROLES = [
   ["fallback", "Fallback judge", "Used if the main model fails or times out."],
   ["embed", "Embeddings", "Finds near-duplicates and pre-filters items. Local only."],
 ];
-const NAV = [["setup", "✨", "Setup", "Walk through it all again"], ["providers", "🔌", "AI Providers", "Models and API keys"], ["chat", "✦", "Chat & search", "Web search, YouTube key"], ["schedule", "🌙", "Schedule", "When the scout runs"], ["sandbox", "🧪", "Try-it sandbox", "Safety limits"], ["privacy", "🔒", "Data & privacy", "What's stored where"], ["about", "ⓘ", "About", "Version and licence"]];
+const NAV = [["setup", "✨", "Setup", "Walk through it all again"], ["providers", "🔌", "AI Providers", "Models and API keys"], ["chat", "✦", "Chat & search", "Web search, YouTube key"], ["voice", "🔊", "Voice", "Listen to your Digest"], ["schedule", "🌙", "Schedule", "When the scout runs"], ["sandbox", "🧪", "Try-it sandbox", "Safety limits"], ["privacy", "🔒", "Data & privacy", "What's stored where"], ["about", "ⓘ", "About", "Version and licence"]];
 const keychain = () => ({ darwin: "macOS Keychain", win32: "Windows Credential Manager" }[B().platform] || "system keychain");
 
 /* What the page shows until GET /api/providers answers: Ollama with the models from config.yaml. */
@@ -180,6 +180,7 @@ NS.pages.settings = (sec = "providers") => {
   wireTilt($(".stage"));
   if (location.hash.split("/").length > 2) document.body.classList.add("card-open");
   if (sec === "chat") { SV = null; return renderChatSearch(); }
+  if (sec === "voice") { VV = null; return renderVoice(); }
   if (sec !== "providers") return renderOther(sec);
   renderProviders();
 };
@@ -192,6 +193,7 @@ function renderOther(sec) {
     sandbox: [["Sandbox here", sb.error ? `unavailable: ${sb.error}` : sb.mode === "container" ? `container (${sb.engine})` : sb.is_mac ? "venv + macOS sandbox" : "venv"],
       ["Prefer", sb.prefer], ["Time limit", `${sb.timeout_s} seconds`], ["Container image", sb.container_image]],
     privacy: [["Data folder", b.data_dir], ["Stored there", "scout.db (items, scores, votes), digests/, profile.yaml"], ["Notes", `written only under ${b.notes_subdir}/ inside a project, when you click Save`],
+      ["Listen recordings", "listen/ in the data folder: MP3s of your Digest, read aloud by Kokoro on this machine (the optional voice add-on) and deleted after 7 days, plus short voice samples. The Digest's text never leaves the machine; only the voice model itself is downloaded once, from Hugging Face"],
       ["Network", "official feeds and public APIs; whole-channel key-term search uses YouTube's API or yt-dlp; judging runs on Ollama on this machine unless you pick a cloud model for a role"]],
     about: [["Version", b.version], ["Licence", "MIT"], ["Model", b.model.name]],
   }[sec] || [];
@@ -208,6 +210,95 @@ function snippbot() {
     <p class="m-8">Night Scout is developed by <b>Snippbot</b>, a self-hosted platform for autonomous AI agents: persistent memory, multi-agent teams, a workflow builder and sandboxed execution. Free for personal use.</p>
     <div class="row mt12"><a class="btn primary" ${site}>snippbot.com ↗</a><a class="btn ytlink" ${NS.ext("https://www.youtube.com/@snippbot")}>▶ YouTube · @snippbot ↗</a></div></section>`;
 }
+
+/* ================= SETTINGS → VOICE (Listen to your Digest) ================= */
+let VV = null; // GET /api/voice
+const VS = { open: {}, playing: null };
+const preview = new Audio();
+const SUGGEST_DESC = { af_heart: "American · warm, natural", af_bella: "American · bright, confident", bf_emma: "British · clear, composed", bm_george: "British · calm, documentary", am_michael: "American · steady, measured" };
+const voiceHead = `<a class="back" href="#/settings">‹ Settings</a><h2 class="serif mt0">Voice</h2>`;
+async function renderVoice() {
+  const pane = $("#setPane"); if (!pane) return;
+  if (!VV) {
+    pane.innerHTML = `${voiceHead}<p class="loading">Checking for the voice add-on…</p>`;
+    const r = await api("GET", "/api/voice"); // the last answer, at once
+    if (!$("#setPane") || location.hash.split("/")[2] !== "voice") return;
+    if (!r.ok) { $("#setPane").innerHTML = `${voiceHead}<p class="muted">${esc(r.error)}</p>`; return; }
+    VV = r.data;
+    // opening Settings → Voice asks the voice Python again (you may have just installed it)
+    api("GET", "/api/voice?refresh=1").then(f => {
+      if (!f.ok || !VV || f.data.available === VV.available) return;
+      VV = f.data;
+      if ($("#setPane") && location.hash.split("/")[2] === "voice") renderVoice();
+    });
+  }
+  if (!VV.available) {
+    pane.innerHTML = `${voiceHead}<section class="pcard"><h4 class="sec-h">Listen to your Digest <span class="muted small">· optional add-on</span></h4>
+      <p class="m0 small">Listen reads your Digest aloud with <b>Kokoro</b>, an open-weight speech model that runs on this computer. It's an add-on because it's big: about <b>1.1 GB</b> for PyTorch, plus a <b>330 MB</b> voice model downloaded the first time it speaks.</p>
+      <div class="vinstall" id="vInstall">${esc(VV.install)}</div>
+      <p class="m0 small muted">Then restart Night Scout. Until then the Digest has no Listen button, and nothing else changes.</p>
+      <div class="vstatus mt10"><span class="dot off"></span><b>Not installed</b></div></section>`;
+    return;
+  }
+  const s = VV.settings, by = Object.fromEntries(VV.voices.map(v => [v.id, v]));
+  const row = (id, desc) => {
+    const v = by[id], on = s.voice === id, pl = VS.playing === id;
+    return `<label class="vrow ${on ? "on" : ""}" data-voice="${esc(id)}"><input type="radio" name="voice" value="${esc(id)}" ${on ? "checked" : ""}><span class="rad"></span><span class="nm">${esc(v.name)}</span><span class="ds">${esc(desc ?? v.desc)}</span>
+      ${id === VV.default ? `<span class="vtag">default</span>` : ""}<button class="pv ${pl ? "playing" : ""}" type="button" data-pv="${esc(id)}" title="Hear ${esc(v.name)}">${pl ? "❚❚" : "▶ Preview"}</button></label>`;
+  };
+  const groups = VV.groups.map(([g, ids]) => {
+    const open = !!VS.open[g];
+    return `<button class="vgroup ${open ? "open" : ""}" type="button" data-group="${esc(g)}" aria-expanded="${open}"><span>${esc(g)} · ${esc(ids.slice(0, 4).map(i => by[i].name).join(", "))}…</span><span>${ids.length} <span class="chev">›</span></span></button>`
+      + (open ? ids.map(i => row(i)).join("") : "");
+  }).join("");
+  const last = VV.last, here = B().platform === "darwin" ? "this Mac" : "this machine";
+  const took = last ? ` The last recording took ${Math.round(last.render_s)} s on ${here} and ${(last.bytes / 1048576).toFixed(1)} MB;` : "";
+  const seg = (key, opts) => `<div class="seg" role="radiogroup">${opts.map(([v, l]) => `<button type="button" data-set="${key}" data-val="${esc(String(v))}" class="${String(s[key]) === String(v) ? "on" : ""}" aria-pressed="${String(s[key]) === String(v)}">${esc(l)}</button>`).join("")}</div>`;
+  pane.innerHTML = `${voiceHead}
+    <section class="pcard"><h4 class="sec-h">Listen to your Digest <span class="muted small">· optional</span></h4>
+      <p class="m0 small">The <b>▶ Listen</b> button on the Digest reads it aloud: each headline, where it's from, and Gemma's summary, topic by topic. The voice is <b>Kokoro</b>, an open-weight speech model that runs on this computer. The text never leaves it.</p>
+      <div class="vstatus mt10"><span class="dot"></span><b>Ready</b><span class="muted">· ${esc(VV.engine)} · ${VV.voices.length} English voices</span></div></section>
+    <section class="pcard"><h4 class="sec-h">Voice <span class="muted small">· ${esc(by[VV.default].name)} unless you pick another</span></h4>
+      <div class="vlist" role="radiogroup" aria-label="Voice"><div class="vgroup"><span>Suggested</span><span></span></div>${VV.suggested.map(i => row(i, SUGGEST_DESC[i])).join("")}${groups}</div></section>
+    <section class="pcard"><h4 class="sec-h">How it reads</h4><div class="vset">
+      <span>Speed</span>${seg("speed", VV.speeds.map(x => [x, `${x}×`]))}
+      <span>What it reads</span>${seg("reads", [["full", "Headlines + summaries"], ["headlines", "Headlines only"]])}
+      <span>Ready by morning</span><div><button class="toggle ${s.ready_by_morning ? "on" : ""}" type="button" id="vMorning" role="switch" aria-checked="${!!s.ready_by_morning}" title="${s.ready_by_morning ? "On" : "Off"}"></button></div>
+      <span class="hint">After the nightly run, record the Digest so Listen starts at once.${took || ""}${took ? " recordings" : " Recordings"} older than ${VV.keep_days} days are deleted.</span></div></section>`;
+  $$("[data-group]", pane).forEach(b => b.onclick = () => { VS.open[b.dataset.group] = !VS.open[b.dataset.group]; renderVoice(); });
+  $$("input[name=voice]", pane).forEach(r => r.onchange = () => saveVoice({ voice: r.value }, `<b>${esc(by[r.value].name)}</b> it is. The next Listen records in this voice.`));
+  $$("[data-pv]", pane).forEach(b => b.onclick = e => { e.preventDefault(); e.stopPropagation(); playPreview(b.dataset.pv, b); });
+  $$("[data-set]", pane).forEach(b => b.onclick = () => {
+    const key = b.dataset.set, val = key === "speed" ? +b.dataset.val : b.dataset.val;
+    saveVoice({ [key]: val }, key === "speed" ? `Listen starts at <b>${val}×</b>.` : val === "headlines" ? "Listen reads <b>headlines only</b> from the next recording." : "Listen reads <b>headlines and summaries</b>.");
+  });
+  $("#vMorning").onclick = () => saveVoice({ ready_by_morning: !s.ready_by_morning }, !s.ready_by_morning ? "<b>Ready by morning is on.</b> The nightly run records the Digest." : "<b>Ready by morning is off.</b> Listen records when you press it.");
+}
+async function saveVoice(body, msg) {
+  const was = { ...VV.settings };
+  Object.assign(VV.settings, body); renderVoice(); // show the choice now; the save follows
+  const r = await api("PUT", "/api/voice", body);
+  if (!r.ok) { VV.settings = was; renderVoice(); }
+  if (!r.ok) return failToast(r, "Saving voice settings");
+  VV = r.data; renderVoice(); toast(msg);
+  if (body.speed) NS.listen?.defaultRate(body.speed);
+}
+function playPreview(id, btn) {
+  if (VS.playing === id && !preview.paused) { preview.pause(); VS.playing = null; return renderVoice(); }
+  NS.listen?.pause();
+  preview.pause(); VS.playing = null;
+  btn.classList.add("busy"); btn.textContent = "◌ Recording…";
+  preview.src = `/api/voice/preview/${encodeURIComponent(id)}`;
+  preview.play().then(() => { VS.playing = id; renderVoice(); }).catch(() => {
+    btn.classList.remove("busy"); btn.textContent = "▶ Preview";
+    toast(`<b>Couldn't play a sample of ${esc(id)}.</b> The voice model may still be downloading; try again in a minute.`);
+  });
+}
+preview.addEventListener("timeupdate", () => {
+  const b = VS.playing && $(`[data-pv="${VS.playing}"]`);
+  if (b && isFinite(preview.duration)) b.textContent = `❚❚ 0:${String(Math.max(0, Math.ceil(preview.duration - preview.currentTime))).padStart(2, "0")}`;
+});
+preview.addEventListener("ended", () => { VS.playing = null; if ($("#setPane") && location.hash.split("/")[2] === "voice") renderVoice(); });
 
 /* ================= SETTINGS → CHAT & SEARCH ================= */
 let SV = null; // GET /api/search
