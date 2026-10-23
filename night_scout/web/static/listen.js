@@ -13,7 +13,7 @@ const minutes = s => `${Math.max(1, Math.round((s || 0) / 60))} min`;
 
 /* S.info: GET /api/listen for the Digest on screen (S.day). P: the player (its own night). */
 const S = { day: null, info: null, available: null };
-const P = { info: null, day: null, idx: -1, open: false, wantPlay: false, rate: 1, poll: null, waitingFor: null };
+const P = { info: null, day: null, idx: -1, open: false, wantPlay: false, rate: 1, waitingFor: null };
 const audio = new Audio();
 audio.preload = "auto";
 
@@ -38,20 +38,31 @@ async function status(day) {
   if (S.day !== day) return;
   S.info = info && info.available ? info : null;
   if (P.info && P.day === day && S.info && S.info.key === P.info.key) P.info = S.info;
-  hero(); storyButtons(); mark();
+  hero(); storyButtons(); mark(); watch();
 }
-function pollSoon() {
-  clearTimeout(P.poll);
-  if (!P.info || !recording(P.info)) return;
-  P.poll = setTimeout(async () => {
-    const info = await fetchInfo(P.day);
-    if (!info || !info.available || !P.info) return;
-    if (info.key !== P.info.key) { P.info = info; } // settings changed meanwhile: follow the new one
-    else P.info = info;
-    if (S.day === P.day) S.info = info;
-    if (info.status === "failed") toast(`<b>Couldn't record the rest.</b> ${esc(info.error || "")}`);
-    if (P.waitingFor !== null && info.chapters[P.waitingFor]?.url) playChapter(P.waitingFor, 0);
-    hero(); draw(); pollSoon();
+/* Keep asking while anything shown is recording: the player's night, or the Digest on screen
+   (its hero says "Recording… n of 16" even with no player open, say during a nightly one). */
+let watchT = null;
+function watch() {
+  clearTimeout(watchT);
+  const day = P.info && recording(P.info) ? P.day : S.info && recording(S.info) ? S.day : null;
+  if (!day) return;
+  watchT = setTimeout(async () => {
+    const info = await fetchInfo(day);
+    if (info && info.available) {
+      if (P.info && P.day === info.day) {
+        if (P.info.key === info.key) {
+          if (info.status === "failed" && P.info.status !== "failed") toast(`<b>Couldn't record the rest.</b> ${esc(info.error || "")}`);
+          P.info = info;
+          if (P.waitingFor !== null && info.chapters[P.waitingFor]?.url) playChapter(P.waitingFor, 0);
+        } else if (recording(P.info)) { // the voice or mode changed: this recording won't go on
+          P.info = { ...P.info, status: "failed" };
+          if (P.waitingFor !== null) toast("<b>The voice settings changed.</b> Press ▶ Listen to hear the new version.");
+        }
+      }
+      if (S.day === info.day) S.info = info;
+    }
+    hero(); storyButtons(); draw(); watch();
   }, 1000);
 }
 
@@ -69,7 +80,7 @@ async function start(day, storyId) {
   else if (same && P.idx >= 0) idx = P.idx;
   unlock();
   build(); playChapter(idx, same && !storyId && P.idx === idx ? audio.currentTime : 0);
-  pollSoon();
+  watch();
 }
 /* iOS/Safari only lets audio play from a tap: touch the element now, while we still have one. */
 function unlock() { if (!audio.src) { try { audio.load(); } catch (e) { /* nothing to load yet */ } } }
@@ -79,7 +90,7 @@ function playChapter(idx, at) {
   idx = Math.max(0, Math.min(idx, info.chapters.length - 1));
   P.idx = idx;
   const ch = info.chapters[idx];
-  if (!ch.url) { // not recorded yet: wait for it (pollSoon plays it when it lands)
+  if (!ch.url) { // not recorded yet: wait for it (watch() plays it when it lands)
     P.waitingFor = idx; audio.pause();
     hero(); draw(); mark(); return;
   }
@@ -104,7 +115,7 @@ function toggle() {
   if (!audio.paused || (P.wantPlay && P.waitingFor !== null)) { P.wantPlay = false; audio.pause(); hero(); draw(); return; }
   P.wantPlay = true;
   if (P.idx < 0) P.idx = 0;
-  if (audio.src && P.waitingFor === null) { audio.playbackRate = P.rate; audio.play().catch(() => {}); }
+  if (audio.src && P.waitingFor === null) { audio.playbackRate = P.rate; audio.play().catch(() => {}); hero(); draw(); } // paused is false already
   else playChapter(P.idx, 0);
 }
 function step(d) { if (P.info) playChapter(P.idx + d, 0); }
@@ -114,11 +125,10 @@ function speed() {
 }
 function close() {
   P.wantPlay = false; audio.pause(); audio.removeAttribute("src"); audio.load();
-  clearTimeout(P.poll);
   Object.assign(P, { info: null, day: null, idx: -1, open: false, waitingFor: null });
   $("#lplayer")?.remove(); document.body.classList.remove("has-player");
   if ("mediaSession" in navigator) navigator.mediaSession.metadata = null;
-  hero(); mark();
+  hero(); mark(); watch(); // the Digest's row keeps following a recording that's still going
 }
 function seek(frac) {
   const info = P.info; if (!info) return;
@@ -259,6 +269,6 @@ NS.listen = {
   available: () => S.available === true && !!S.info,
   defaultRate: r => { if (SPEEDS.includes(r) && !P.info) P.rate = r; },
   pause: () => { if (!audio.paused) { P.wantPlay = false; audio.pause(); } },
-  state: () => ({ open: P.open, idx: P.idx, day: P.day, key: P.info?.key, playing: !audio.paused, rate: P.rate, waiting: P.waitingFor, src: audio.src, time: audio.currentTime }),
+  state: () => ({ open: P.open, idx: P.idx, day: P.day, key: P.info?.key, playing: !audio.paused, rate: P.rate, audioRate: audio.playbackRate, waiting: P.waitingFor, src: audio.src, time: audio.currentTime }),
 };
 })();
