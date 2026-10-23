@@ -14,6 +14,8 @@ const badge = (src, lg) => `<span class="src src-${esc(src)}${lg ? " lg" : ""}" 
 /* an href only for http(s) URLs (the server already sends null for anything else) */
 const isWeb = u => typeof u === "string" && /^https?:\/\//i.test(u);
 const ext = u => isWeb(u) ? `href="${esc(u)}" target="_blank" rel="noopener noreferrer"` : "";
+/* the scout: the Ask icon (top bar, chat drawer, Ask buttons) */
+const scoutImg = (size = 18, cls = "scout-ic") => `<img class="${cls}" src="/static/scout.svg" width="${size}" height="${size}" alt="">`;
 
 /* widths and animation delays from data attributes (CSP: no style="" in HTML strings) */
 function fx(root) {
@@ -151,7 +153,8 @@ function chrome(page) {
 
 /* ---- router ---- */
 function route() {
-  const [, page = "morning", a, b] = (location.hash || "#/morning").split("/");
+  let [, page = "digest", a, b] = (location.hash || "#/digest").split("/");
+  if (page === "actions") page = "morning"; // Actions is the old Morning view, renamed
   document.body.dataset.page = page;
   document.body.classList.remove("card-open");
   if (!B) return;
@@ -159,7 +162,8 @@ function route() {
   if (NS.pages[page]) return NS.pages[page](arg, b);
   if (page === "sources") return renderSources();
   if (page === "projects" || page === "profile") return renderProfile(arg);
-  renderMorning(arg, b);
+  if (page === "morning" || !NS.pages.digest) return renderMorning(arg, b);
+  NS.pages.digest();
 }
 window.addEventListener("hashchange", route);
 const go = h => { if (location.hash === h) route(); else location.hash = h; };
@@ -173,6 +177,7 @@ function errorView(r) {
 /* ================= MORNING ================= */
 function morningState() {
   if (RUN?.running) return "running";
+  if (!B.projects.length && (B.topics || []).length) return "noprojects";
   if (!M.day) return "empty";
   if (!visibleCards().length && !(M.ideas || []).length) return "quiet";
   return "normal";
@@ -182,7 +187,7 @@ function renderMorning(id, tab) {
   const app = $("#app");
   if (!M) {
     loading("Loading your morning…");
-    loadMorning().then(r => { if (!r.ok) return errorView(r); if ((location.hash.split("/")[1] || "morning") === "morning") { reset(); route(); } });
+    loadMorning().then(r => { if (!r.ok) return errorView(r); if (["morning", "actions"].includes(location.hash.split("/")[1])) { reset(); route(); } });
     return;
   }
   const st8 = morningState();
@@ -287,7 +292,7 @@ function showIdea(id) {
   const started = S.ideaStarted[x.id] || (x.status === "started" ? { path: null } : null);
   const items = M.idea_items || {};
   el.innerHTML = `<div class="big-scroll">
-    <div class="big-head"><a class="back" href="#/morning">‹ Morning</a><span class="kind k-idea">New project idea</span><span class="muted">Gemma · from last night's ${M.run?.stats?.scored ?? 0} judged items</span><span class="spacer"></span>
+    <div class="big-head"><a class="back" href="#/actions">‹ Actions</a><span class="kind k-idea">New project idea</span><span class="muted">Gemma · from last night's ${M.run?.stats?.scored ?? 0} judged items</span><span class="spacer"></span>
       ${started ? "" : `<button class="btn ghost" id="iNo">Not interested</button>`}</div>
     <h2 class="serif idea-title">${esc(x.title)}</h2>
     <p class="summary idea-pitch-lg">${esc(x.pitch)}</p>
@@ -340,7 +345,7 @@ function showBig(id, direction, keepPos) {
   const el = document.createElement("div");
   el.className = "big" + (keepPos ? "" : " enter");
   el.innerHTML = `<div class="big-scroll">
-    <div class="big-head"><a class="back" href="#/morning">‹ Morning</a>${badge(c.source, 1)}<span><strong class="hi">${esc(c.source_name)}</strong>${c.author && c.author !== c.source_name ? " · " + esc(c.author) : ""}${c.published ? " · " + esc(fmtShort(c.published)) : ""}</span>
+    <div class="big-head"><a class="back" href="#/actions">‹ Actions</a>${badge(c.source, 1)}<span><strong class="hi">${esc(c.source_name)}</strong>${c.author && c.author !== c.source_name ? " · " + esc(c.author) : ""}${c.published ? " · " + esc(fmtShort(c.published)) : ""}</span>
       ${c.also_seen.length ? `<span class="buzz" title="Also seen on ${esc(c.also_seen.join(", "))}">also on ${c.also_seen.length} more</span>` : ""}
       <span class="spacer"></span>
       <div class="votes">
@@ -635,6 +640,11 @@ function paneNote(c, pane, aid) {
 
 /* ---- Morning states: scout running, quiet, first run ---- */
 let runPoll;
+const scoutingFor = () => {
+  if (RUN?.projects) return `${RUN.projects} project${RUN.projects === 1 ? "" : "s"}`;
+  const n = (B.topics || []).length;
+  return n ? `your ${n} topic${n === 1 ? "" : "s"}` : "you";
+};
 function renderMorningState(app, s) {
   const st = M.run?.stats || {};
   const projects = B.projects;
@@ -643,10 +653,11 @@ function renderMorningState(app, s) {
     quiet: M.ignored && !(M.cards || []).length
       ? `<p class="eyebrow">Good morning · ${esc(dayLabel())}</p><h1>All <em>clear.</em></h1><p class="sub">You've hidden every pick for today.</p>`
       : `<p class="eyebrow">Good morning · ${esc(dayLabel())}</p><h1>A <em>quiet</em><br>morning.</h1><p class="sub">Nothing cleared the bar today. That's the point: no feed to scroll.</p>`,
+    noprojects: `<p class="eyebrow">Actions</p><h1>Actions come<br>from <em>your projects.</em></h1><p class="sub">You're reading the news without projects, and that's fine: the <a href="#/digest">Digest</a> has the night's stories for your topics.</p>`,
     empty: `<p class="eyebrow">Welcome</p><h1>No digest<br><em>yet.</em></h1><p class="sub">${projects.length ? "Your projects are profiled. Run the scout once, or schedule it for tonight." : "Profile your projects, then run the scout once or schedule it for tonight."}</p>`,
   }[s];
   let right = "";
-  if (s === "running") right = `<h2 class="serif">Scouting ${RUN.sources_total} sources for ${RUN.projects} project${RUN.projects === 1 ? "" : "s"}</h2>
+  if (s === "running") right = `<h2 class="serif">Scouting ${RUN.sources_total} sources for ${scoutingFor()}</h2>
       <ul class="stages" id="stages"></ul>
       <p class="muted small mt22">${esc(judge().model)} ${judge().local ? `on ${here()} · nothing leaves the machine` : `via ${esc(judge().provider)} · item text goes to ${esc(judge().provider)}`}. This page follows along every few seconds.</p>`;
   if (s === "quiet") right = (M.ignored && !(M.cards || []).length)
@@ -655,11 +666,23 @@ function renderMorningState(app, s) {
     : `<h2 class="serif">Nothing worth your morning.</h2>
       <p class="summary">Gemma read <strong>${st.scored ?? 0}</strong> of the <strong>${st.new ?? 0}</strong> new items.${M.best_score != null ? ` The best fit was <strong>${pct(M.best_score)}%</strong>;` : ""} the bar is <strong>${pct(M.bar)}%</strong>.</p>
       <div class="row"><a class="btn" href="#/sources">Check sources</a><a class="btn ghost" href="#/projects">Tune what projects care about</a></div>`;
+  if (s === "noprojects") right = `<h2 class="serif">Add a project to get actions.</h2>
+      <p class="summary">Point Night Scout at a folder you're building in. Each night Gemma checks every item against it and tells you what to do:</p>
+      <ul class="why-actions"><li><span class="kind k-issue">Issue</span><span>A security advisory or breaking bug in something you depend on.</span></li>
+        <li><span class="kind k-change">Change</span><span>A release or API change that affects your code.</span></li>
+        <li><span class="kind k-improvement">Improvement</span><span>A tool or technique worth trying on it, with a sandboxed <b>Try it</b>.</span></li>
+        <li><span>💡</span><span>New side-project ideas from the night's best items.</span></li></ul>
+      <div class="row"><a class="btn primary" href="#/setup">Add a project ›</a><a class="btn ghost" href="#/digest">Back to the Digest</a></div>
+      <p class="muted small mt22">Gemma reads only the README, manifests and file types. Your code never leaves this machine.</p>`;
   if (s === "empty") right = projects.length
     ? `<h2 class="serif">Two commands.</h2>
       <p class="summary">Run one pass now (about 15 minutes on Gemma 4 12B):</p><div class="cmdline">$ night-scout run</div>
       <p class="summary">Or let it run every night at ${esc(B.schedule.time)} while you sleep:</p><div class="cmdline">$ night-scout schedule --install</div>
       <p class="muted small">Profile: ${projects.map(esc).join(" · ")} · <a href="#/projects">review it</a></p>`
+    : B.setup?.needed ? `<h2 class="serif">Let's set it up.</h2>
+      <p class="summary">Six short steps: pick the model, add your projects, choose what it reads and when it goes out.</p>
+      <div class="row"><a class="btn primary" href="#/setup">Set up the scout ›</a></div>
+      <p class="muted small mt22">Prefer the terminal? <code>night-scout init ~/code/my-app</code>, then <code>night-scout run</code>.</p>`
     : `<h2 class="serif">Three commands.</h2>
       <p class="summary">Point the scout at your project folders and let Gemma profile them:</p><div class="cmdline">$ night-scout init ~/code/my-app</div>
       <p class="summary">Run one pass now:</p><div class="cmdline">$ night-scout run</div>
@@ -694,15 +717,18 @@ function watchRun() {
     const was = !!RUN?.running;
     const r = await loadRun();
     if (!r.ok) return watchRun();
-    const page = (location.hash || "#/morning").split("/")[1] || "morning";
+    let page = (location.hash || "#/digest").split("/")[1] || "digest";
+    if (page === "actions") page = "morning";
+    const home = page === "morning" || page === "digest";
     if (was && !RUN.running) {
       await Promise.all([loadBoot(), loadMorning()]);
-      if (page === "morning") { reset(); route(); }
+      NS.digestReset?.();
+      if (home) { reset(); route(); }
       else chrome(page);
       const n = visibleCards().length;
-      toast(`<b>Good morning.</b> ${words(n)} thing${n === 1 ? "" : "s"} worth doing.`);
+      toast(B.projects.length ? `<b>Good morning.</b> ${words(n)} thing${n === 1 ? "" : "s"} worth doing.` : `<b>Good morning.</b> Your Digest is ready.`);
     } else if (!was && RUN.running) {
-      if (page === "morning") { reset(); route(); } else chrome(page);
+      if (home) { NS.digestReset?.(); reset(); route(); } else chrome(page);
     } else if (RUN.running) {
       drawStages(); chrome(page);
     }
@@ -731,6 +757,7 @@ const TYPE = {
 let SRC = null;
 function renderSources() {
   chrome("sources"); cur = null;
+  if (NS.srcStale) { SRC = null; NS.srcStale = false; }
   if (!SRC) {
     loading("Loading sources…");
     api("GET", "/api/sources").then(r => { if (!r.ok) return errorView(r); SRC = r.data; if ((location.hash.split("/")[1] || "") === "sources") renderSources(); });
@@ -745,7 +772,7 @@ function renderSources() {
   $("#app").innerHTML = `<div class="frame">
     <div class="col-left">
       <section class="hero"><p class="eyebrow">Sources</p><h1>What the scout<br><em>reads</em> overnight.</h1>
-        <p class="sub">Official feeds and public APIs only. No logins, no scraping.</p></section>
+        <p class="sub">Official feeds and public APIs, no logins. Searching a whole YouTube channel for your key terms uses YouTube's API, or yt-dlp if you haven't added a key.</p></section>
       <div class="panel"><h4 class="sec-h">Last run${SRC.run ? " · " + esc(fmtAt(SRC.run.started_at)) : ""}</h4>
         ${rows.length ? rows.map(r => `<div class="srcrow ${r.ok ? "" : "bad"}"><span class="okdot"></span><span>${esc(r.label)}</span>
           <span class="num">${r.ok ? `${r.fetched} · ${r.new} new` : esc(r.message)}</span></div>`).join("") : `<p class="small muted m0">No runs yet.</p>`}
@@ -782,16 +809,21 @@ function renderSources() {
   pane.innerHTML = Object.entries(groups).map(([t, list]) => `<div class="group">
       <div class="group-h">${badge(t, 1)}<h4>${esc(TYPE[t]?.[0] || t)}</h4><span class="muted">${esc(TYPE[t]?.[1] || "")}</span></div>
       ${list.map(r => { const off = r.enabled === false, st = byKey[r.key], sw = w.source[r.label];
-        return `<div class="feed ${off ? "off" : ""}"><div><div>${esc(r.label)}${sw ? ` <span class="${sw < 0 ? "neg" : "pos"} fs11">${fmt(sw)}</span>` : ""}</div><div class="what">${esc(r.detail)}</div></div>
+        return `<div class="feed ${off ? "off" : ""}"><div><div>${esc(r.label)}${sw ? ` <span class="${sw < 0 ? "neg" : "pos"} fs11">${fmt(sw)}</span>` : ""}</div><div class="what">${esc(r.detail)}</div>${scoutChips(r)}</div>
           <span class="stat">${off ? "off" : !st ? "first fetch tonight" : st.ok ? `${st.new} new last run` : `<span class="neg">${esc(st.message)}</span>`}</span>
-          <button class="toggle ${off ? "" : "on"}" data-k="${esc(r.key)}" title="${off ? "Off" : "On"}"></button></div>`; }).join("")}
+          ${SCOUTABLE_ROW.includes(r.type) ? `<button class="btn ghost sm" data-edit="${esc(r.key)}">${S.editKey === r.key ? "Close" : "Edit"}</button>` : ""}
+          <button class="toggle ${off ? "" : "on"}" data-k="${esc(r.key)}" title="${off ? "Off" : "On"}"></button></div>
+          ${S.editKey === r.key ? `<div class="feededit">${scoutFields(r.type === "rss" ? "website" : r.type, r.look_back_days || LB(), (r.scout_terms || []).join(", "), true)}
+            <div class="row"><button class="btn primary sm" id="eSave">Save</button><button class="btn ghost sm" id="eCancel">Cancel</button></div></div>` : ""}`; }).join("")}
     </div>`).join("") + `
     <div class="group" id="addSrc"><h4 class="sec-h">Add a source</h4>
       <div class="types">${ADD.map(t => `<button class="type ${S.addType === t.k ? "on" : ""} ${t.off ? "off" : ""}" data-k="${t.k}">${badge(t.icon)}<b>${esc(t.name)}</b><small>${esc(t.hint)}</small></button>`).join("")}</div>
       ${(() => { const t = ADD.find(x => x.k === S.addType);
         return t.off ? `<div class="supply mt12"><strong>Not available.</strong> ${esc(t.why)}</div>`
           : `<div class="addform"><input type="text" id="aVal" placeholder="${esc(t.ph)}"><button class="btn primary" id="aGo">Add ${esc(t.name.toLowerCase())}</button></div>
-             <p class="muted small m-8">${esc(t.note)}</p>`; })()}
+             <p class="muted small m-8">${esc(t.note)}</p>
+             ${SCOUTABLE_ADD.includes(t.k) ? scoutFields(t.k, S.addLb || LB(), S.addTerms || "") : ""}`; })()}
+      ${S.scoutResult ? scoutResult(S.scoutResult) : ""}
     </div>`;
   $$(".toggle", pane).forEach(b => b.onclick = async () => {
     const item = SRC.catalog.find(x => x.key === b.dataset.k); if (!item) return;
@@ -802,19 +834,98 @@ function renderSources() {
     toast(`${want ? "<b>On.</b>" : "<b>Off.</b>"} ${esc(item.label)} ${want ? "is back in" : "sits out"} tonight's run.`);
   });
   $$(".type", pane).forEach(b => b.onclick = () => { S.addType = b.dataset.k; renderSources(); $("#addSrc").scrollIntoView({ block: "nearest" }); $("#aVal")?.focus(); });
+  wireScoutFields(pane);
+  $$("[data-edit]", pane).forEach(b => b.onclick = () => { S.editKey = S.editKey === b.dataset.edit ? null : b.dataset.edit; renderSources(); });
+  const eSave = $("#eSave");
+  if (eSave) {
+    $("#eCancel").onclick = () => { S.editKey = null; renderSources(); };
+    eSave.onclick = async () => {
+      const box = eSave.closest(".feededit"), item = SRC.catalog.find(x => x.key === S.editKey);
+      const body = { key: S.editKey, look_back_days: +$(".lbval", box).textContent, scout_terms: splitTerms($(".terms-in", box).value) };
+      eSave.disabled = true;
+      const was = new Set((item.scout_terms || []).map(x => x.toLowerCase()));
+      const fresh = body.scout_terms.filter(x => !was.has(x.toLowerCase()));
+      if (fresh.length) { eSave.textContent = item.type === "youtube" ? "Searching the channel…" : "Checking the feed…"; }
+      const r = await api("POST", "/api/sources/scout", body);
+      eSave.disabled = false;
+      if (!r.ok) { eSave.textContent = "Save"; return failToast(r, "Changing sources from here"); }
+      Object.assign(item, { look_back_days: body.look_back_days, scout_terms: body.scout_terms }); S.editKey = null;
+      const kind = item.type === "rss" ? "website" : item.type;
+      S.scoutResult = r.data?.scout ? { ...r.data.scout, label: item.label, type: kind, edited: true } : null;
+      renderSources();
+      if (r.data?.scout_error) toast(`<b>Saved</b>, but the key-term search didn't run: ${esc(r.data.scout_error)}`);
+      else if (!S.scoutResult) toast(body.scout_terms.length ? `<b>Saved.</b> New posts from ${esc(item.label)} that mention ${esc(body.scout_terms.join(", "))} go first.` : `<b>Saved.</b> ${esc(item.label)} has no key terms.`);
+      if (S.scoutResult) $("#addSrc .scoutres")?.scrollIntoView({ block: "nearest" });
+    };
+  }
+  const srx = $("#srX"); if (srx) srx.onclick = () => { S.scoutResult = null; renderSources(); };
   const goBtn = $("#aGo");
   const add = async () => {
     const t = ADD.find(x => x.k === S.addType), v = $("#aVal").value.trim(); if (!v) return $("#aVal").focus();
+    const body = { type: t.k, value: v };
+    if (SCOUTABLE_ADD.includes(t.k)) { body.look_back_days = S.addLb || LB(); body.scout_terms = splitTerms($("#aTerms")?.value); }
     goBtn.disabled = true; const label = goBtn.textContent;
     if (t.discover) goBtn.textContent = "Looking for a feed…";
-    const r = await api("POST", "/api/sources/add", { type: t.k, value: v });
+    if (body.scout_terms?.length) goBtn.textContent = t.k === "youtube" ? "Searching the channel…" : "Checking the feed…";
+    const r = await api("POST", "/api/sources/add", body);
     goBtn.disabled = false; goBtn.textContent = label;
     if (!r.ok) return failToast(r, "Adding sources from here");
-    SRC = null;
-    toast(`<b>Added.</b> ${esc(r.data?.label || v)} · first fetch tonight at ${esc(B.schedule.time)}.`);
+    SRC = null; S.addTerms = ""; S.addLb = LB();
+    S.scoutResult = r.data?.scout ? { ...r.data.scout, label: r.data.label || v, type: t.k, existing: r.data.existing } : null;
+    if (r.data?.scout_error) toast(`<b>${r.data.existing ? "Updated" : "Added"} ${esc(r.data.label || v)}</b>, but the key-term search didn't run: ${esc(r.data.scout_error)} New posts that mention a term still go first.`);
+    else if (!S.scoutResult) toast(r.data?.existing ? `<b>Updated.</b> You already follow ${esc(r.data.label)}; its look back and key terms are saved.`
+      : `<b>Added.</b> ${esc(r.data?.label || v)} · reads ${body.look_back_days || LB()} days back at ${esc(B.schedule.time)} tonight.`);
     renderSources();
   };
   if (goBtn) { goBtn.onclick = add; $("#aVal").onkeydown = e => { if (e.key === "Enter") add(); }; }
+}
+/* Look back + Scout key terms (feed-type sources) */
+const LB = () => SRC?.look_back_default || 3, SCOUTABLE_ADD = ["youtube", "website", "newsletter", "podcast", "reddit", "arxiv"], SCOUTABLE_ROW = ["youtube", "rss", "reddit"];
+const splitTerms = v => [...new Set(String(v || "").split(",").map(x => x.trim()).filter(Boolean))].slice(0, 10);
+function scoutChips(r) {
+  const lb = r.look_back_days && r.look_back_days !== LB() ? `<span class="chip">looks back ${r.look_back_days} day${r.look_back_days === 1 ? "" : "s"}</span>` : "";
+  const tm = (r.scout_terms || []).map(x => `<span class="chip term">🔎 ${esc(x)}</span>`).join("");
+  return lb || tm ? `<div class="scoutchips">${lb}${tm}</div>` : "";
+}
+function scoutFields(kind, lb, terms, editing) {
+  const yt = kind === "youtube", key = SRC?.youtube_api_key;
+  const lbNote = yt ? "How many days of videos the first night reads (and how far it catches up after nights the scout didn't run). YouTube's feed lists only the 15 newest videos, so a busy channel may not reach that far."
+    : "How many days of posts the first night reads (and how far it catches up after nights the scout didn't run).";
+  const tNote = editing ? (yt ? "New uploads that mention a term go to the front of Gemma's queue. Saving new terms also searches the whole channel for them once." : "New posts that mention a term go to the front of Gemma's queue.")
+    : yt ? "Once, now: searches the whole channel, up to 10 videos per term, any age. Then every night: new uploads that mention a term go to the front of Gemma's queue."
+    : "Once, now: checks every post the feed still lists, any age. Then every night: new posts that mention a term go to the front of Gemma's queue. Feeds only; posts the feed no longer lists can't be searched.";
+  const via = yt ? `<p class="small muted m-4 via">${key ? "🔑 Channel search uses your YouTube Data API key."
+    : SRC?.ytdlp ? `Channel search uses <b>yt-dlp</b>. <a href="#/settings/chat">Add a YouTube API key</a> to use the official API instead.`
+    : `<span class="neg">Channel search needs a <a href="#/settings/chat">YouTube API key</a> or yt-dlp (<code>pip install yt-dlp</code>).</span> New uploads that mention a term still go first.`}</p>` : "";
+  return `<div class="scoutopts">
+    <div class="sopt"><span class="slabel">Look back</span>
+      <span class="stepper"><button type="button" data-lb="-1" ${lb <= 1 ? "disabled" : ""} aria-label="Fewer days">−</button><b class="lbval">${lb}</b><span>day${lb === 1 ? "" : "s"}</span><button type="button" data-lb="1" ${lb >= 14 ? "disabled" : ""} aria-label="More days">+</button></span>
+      <small class="muted">${esc(lbNote)}</small></div>
+    <div class="sopt"><span class="slabel">Scout key terms <small class="muted">comma delimited · optional</small></span>
+      <input type="text" class="terms-in" ${editing ? "" : 'id="aTerms"'} value="${esc(terms)}" placeholder="${yt ? "kling, veo, seedance" : "mcp, ollama"}" autocomplete="off">
+      <small class="muted">${esc(tNote)} A term matches a whole word in the title or description, any case.</small>${via}</div></div>`;
+}
+function wireScoutFields(root) {
+  $$(".scoutopts", root).forEach(box => {
+    const editing = !!box.closest(".feededit");
+    $$("[data-lb]", box).forEach(b => b.onclick = () => {
+      const v = Math.min(14, Math.max(1, +$(".lbval", box).textContent + +b.dataset.lb));
+      if (editing) { $(".lbval", box).textContent = v; $$("[data-lb]", box).forEach(x => x.disabled = (+x.dataset.lb < 0 ? v <= 1 : v >= 14)); return; }
+      S.addLb = v; S.addTerms = $("#aTerms")?.value || ""; const val = $("#aVal")?.value || ""; renderSources(); if ($("#aVal")) $("#aVal").value = val;
+    });
+  });
+  const ti = $("#aTerms"); if (ti) ti.oninput = () => { S.addTerms = ti.value; };
+}
+function scoutResult(x) {
+  const yt = x.type === "youtube", all = x.matches || [];
+  const termRow = t => `<div class="sr-term"><b>🔎 ${esc(t.term)}</b><span>${t.matched} match${t.matched === 1 ? "" : "es"}</span>
+    <span class="muted small">${yt ? `${t.checked} YouTube result${t.checked === 1 ? "" : "s"} checked; ${t.checked - t.matched} didn't mention it` : `${t.checked} posts in the feed checked`}</span></div>`;
+  return `<div class="scoutres"><button class="x" id="srX" title="Dismiss">✕</button>
+    <p class="sr-h"><b>✓ ${esc(x.label)} ${x.existing ? "updated" : x.edited ? "saved" : "added"}.</b> ${x.existing ? "You already follow it, so its look back and key terms were updated. " : ""}${yt ? `Searched the whole channel with ${x.via === "api" ? "the YouTube Data API" : "yt-dlp"}.` : "Checked its feed."}</p>
+    ${x.terms.map(termRow).join("")}
+    ${all.length ? `<div class="sr-list">${all.map(m => `<a class="sr-item" ${NS.ext(m.url)}><span class="mono small muted">${esc(m.date)}</span><span>${esc(m.title)}</span><span class="sr-tags">${m.terms.map(t => `<span class="chip term">${esc(t)}</span>`).join("")}</span></a>`).join("")}</div>` : ""}
+    <p class="small m-8">${x.queued ? `<b>${x.queued} ${yt ? "video" : "post"}${x.queued === 1 ? "" : "s"} go first in the next run (${esc(B.schedule.time)})</b>, ahead of the usual queue. If that's more than the run's ${B.thresholds?.max_scored ?? 40}-item limit, the rest go first the night after.`
+      : all.length ? "Gemma has already read these, so nothing new is queued." : "Nothing matched yet."} From now on, new ${yt ? "uploads" : "posts"} that mention a term go first${x.edited ? "" : `, and the first night reads the last ${x.look_back_days} day${x.look_back_days === 1 ? "" : "s"}`}.</p></div>`;
 }
 const ADD = [
   { k: "website", icon: "rss", name: "Website or blog", hint: "finds its RSS feed", ph: "https://example.com", note: "Paste the site's address. Night Scout looks for its RSS or Atom feed; sites without one can't be followed (no scraping).", discover: 1 },
@@ -985,8 +1096,8 @@ function pollRebuild() {
 /* ================= keys, sky, boot ================= */
 document.addEventListener("keydown", e => {
   if (/INPUT|TEXTAREA|SELECT/.test(e.target.tagName) || e.target.isContentEditable || $(".sheet-wrap") || $("#tour")) return;
-  const page = (location.hash || "#/morning").split("/")[1] || "morning";
-  if (page !== "morning" || !M || morningState() !== "normal") return;
+  const page = (location.hash || "#/digest").split("/")[1] || "digest";
+  if (!["morning", "actions"].includes(page) || !M || morningState() !== "normal") return;
   const ids = visibleCards().map(c => c.id), i = ids.indexOf(+cur);
   if (["ArrowDown", "j"].includes(e.key) && i < ids.length - 1) { e.preventDefault(); go(`#/morning/${ids[i + 1]}`); }
   if (["ArrowUp", "k"].includes(e.key) && i > 0) { e.preventDefault(); go(`#/morning/${ids[i - 1]}`); }
@@ -1015,11 +1126,30 @@ async function boot() {
   loading("Waking the scout…");
   const [b] = await Promise.all([loadBoot(), loadRun()]);
   if (!b.ok) return errorView(b);
+  // First launch (no projects profiled yet): open Setup instead of an empty Morning, unless
+  // this tab already chose "Skip setup for now".
+  const page = (location.hash || "#/digest").split("/")[1] || "digest";
+  if (B.setup?.needed && ["digest", "morning", "actions"].includes(page) && !RUN?.running && !sessionStorage.getItem("nsSetupSkipped")) {
+    location.replace("#/setup"); // replace: Back shouldn't bounce into the empty Morning
+  }
   route();
   watchRun();
 }
 
-Object.assign(NS, { $, $$, esc, md, toast, go, badge, wireTilt, chrome, card, kindPill, words, fx, api, failToast, ext, isWeb, reset, loading, errorView,
+/* Setup's "Run now": wait (up to a minute) for the new run to register, then follow it on
+   Morning. Returns whether it showed up. */
+async function kickRun() {
+  const until = Date.now() + 60000;
+  for (;;) {
+    await loadRun();
+    if (RUN?.running || Date.now() > until) break;
+    await new Promise(r => setTimeout(r, 1000));
+  }
+  M = null; reset(); go("#/morning"); watchRun();
+  return !!RUN?.running;
+}
+
+Object.assign(NS, { runActive: () => !!RUN?.running, loadBoot, kickRun, $, $$, esc, md, toast, go, badge, wireTilt, chrome, card, kindPill, words, fx, api, failToast, ext, isWeb, scoutImg, reset, loading, errorView,
   S, visibleCards, loadMorning, route });
 /* live views of the loaded data (Object.assign would copy today's value, not a getter) */
 Object.defineProperties(NS, { B: { get: () => B }, M: { get: () => M } });

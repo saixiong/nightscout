@@ -16,6 +16,7 @@ from .db import Store
 STEP = 0.1
 ITEM_SHARE = 0.5  # an item vote counts half toward its source and topics
 MUTE_AT = -0.3
+MUTE_VOTES = -3  # one "Mute source" from the Digest = three source 👎 (STEP × -3 = MUTE_AT)
 
 
 @dataclass

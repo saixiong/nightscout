@@ -51,3 +51,8 @@ class FakeLLM:
 
 def dumps(obj: Any) -> str:
     return json.dumps(obj)
+
+
+# The Digest fields every judgement must now carry (all required). Tests that don't care
+# about the Digest add these: "fits none of your topics".
+NO_DIGEST: dict[str, Any] = {"topic": None, "topic_relevance": 0.0, "outline": [], "headline": None}

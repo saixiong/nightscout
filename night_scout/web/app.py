@@ -11,6 +11,7 @@ import functools
 import json
 import logging
 import os
+import re
 import secrets
 import sqlite3
 import sys
@@ -34,26 +35,44 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .. import __version__
 from ..core import actions
+from ..core import schedule as schedule_mod
+from ..core import setup as setup_mod
 from ..core.config import (
     CONFIG_LOCK,
+    LOOK_BACK_MAX,
+    SCOUTABLE_TYPES,
     Config,
     ProviderConfig,
+    Schedule,
+    ScoutSettings,
     Sources,
+    clean_scout_terms,
     load_config,
     save_config,
     split_ref,
 )
 from ..core.db import Store
-from ..core.discover import add_source
-from ..core.feedback import MUTE_AT, compute_weights
+from ..core.digest import day_window, split_digest
+from ..core.discover import AlreadyFollowing, add_source_keyed
+from ..core.feedback import MUTE_AT, MUTE_VOTES, compute_weights
 from ..core.http import PoliteClient, SourceError
 from ..core.ideas import start_project_from_idea
-from ..core.llm import LLM, ModelError
+from ..core.llm import LLM, ModelError, ModelUnavailable
 from ..core.models import utcnow
-from ..core.profile import build_profile_file, load_profile
-from ..core.providers import PRESETS, make_llm, ollama_models, ollama_pull, preset, test_provider
+from ..core.profile import Profile, build_profile_file, load_profile, profile_project, save_topics
+from ..core.providers import (
+    PRESETS,
+    fetch_models,
+    make_llm,
+    ollama_models,
+    ollama_pull,
+    preset,
+    runs_locally,
+    test_provider,
+)
 from ..core.safety import check_commands
 from ..core.sandbox import Plan, choose_mode
+from ..core.scout import ScoutError, run_scout, youtube_key_view, ytdlp_command
 from ..core.secrets import (
     SecretStoreUnavailable,
     delete_key,
@@ -63,7 +82,7 @@ from ..core.secrets import (
     masked,
     set_key,
 )
-from ..core.sources import all_tasks, set_source_enabled
+from ..core.sources import all_tasks, configured_tasks, set_source_enabled
 
 log = logging.getLogger(__name__)
 HERE = Path(__file__).parent
@@ -88,6 +107,24 @@ class ToggleBody(BaseModel):
 class AddSourceBody(BaseModel):
     type: str
     value: str
+    # Look back + Scout key terms (feed-style sources only); None = leave as is / default
+    look_back_days: int | None = Field(default=None, ge=1, le=LOOK_BACK_MAX)
+    scout_terms: list[str] | None = None
+
+
+class ScoutBody(BaseModel):
+    key: str
+    look_back_days: int | None = Field(default=None, ge=1, le=LOOK_BACK_MAX)
+    scout_terms: list[str] = []
+
+
+class AddProjectBody(BaseModel):
+    path: str
+
+
+class ScheduleBody(BaseModel):
+    time: str
+    nightly: bool
 
 
 class KeyBody(BaseModel):
@@ -99,12 +136,35 @@ class NewProvider(BaseModel):
     name: str
     base_url: str
     api_key: str | None = None
-    model: str | None = None
+    model: str | None = None  # Setup's add form sends one model
+    models: list[str] | None = None  # the Settings sheet sends the list
+
+
+class EditProvider(BaseModel):
+    name: str
+    base_url: str
+    api_key: str | None = None  # blank keeps the stored key
+    models: list[str] = []
+
+
+class ProbeBody(BaseModel):
+    base_url: str
+    api_key: str | None = None
+    id: str | None = None  # an existing custom provider: use its stored key if api_key is blank
+
+
+class DraftBody(BaseModel):
+    name: str
+    base_url: str
+    api_key: str | None = None
+    models: list[str] = []
+    id: str | None = None
 
 
 class RolesBody(BaseModel):
     judge: str | None = None
     fallback: str | None = None
+    chat: str | None = None  # "" = same as the Judge
     embed: str | None = None
 
 
@@ -113,10 +173,46 @@ class PullBody(BaseModel):
 
 
 class ModelBody(BaseModel):
-    model: str
+    model: str | None = None  # append one (LM Studio, Setup)
+    models: list[str] | None = None  # replace the offered list (Models ▾)
+
+
+class ProviderTestBody(BaseModel):
+    model: str | None = None  # test this model rather than the provider's first one
 
 
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
+# Keychain ids used for other keys (web search, YouTube): never a provider id.
+RESERVED_IDS = frozenset({"brave-search", "youtube-data-api"})
+
+
+def model_name_ok(m: str) -> bool:
+    return bool(m) and len(m) <= 200 and not any(ch.isspace() for ch in m)
+
+
+def clean_models(models: list[str]) -> list[str]:
+    """Strip, de-duplicate, validate. Raises HTTPException(400) on a bad name."""
+    out: list[str] = []
+    for raw in models:
+        m = str(raw).strip()
+        if not m:
+            continue
+        if not model_name_ok(m):
+            raise HTTPException(400, f"That model name doesn't look right: {m[:60]!r}")
+        if m not in out:
+            out.append(m)
+    if len(out) > 300:
+        raise HTTPException(400, "That's too many models to offer; tick fewer.")
+    return out
+
+
+def same_origin(a: str, b: str) -> bool:
+    pa, pb = urlsplit(a), urlsplit(b)
+    return (pa.scheme, pa.hostname, pa.port) == (pb.scheme, pb.hostname, pb.port)
+
+
+def pydantic_msg(e: ValidationError) -> str:
+    return "; ".join(str(err["msg"]).removeprefix("Value error, ") for err in e.errors())[:300]
 
 
 def config_writer(fn: Any) -> Any:
@@ -136,6 +232,11 @@ def probe(url: str) -> httpx.Response | None:
         return httpx.get(url, timeout=1.5)
     except httpx.HTTPError:
         return None
+
+
+def plain_title(title: str | None) -> str:
+    """Posts sometimes carry markdown emphasis in their first line (Bluesky, Mastodon)."""
+    return " ".join(re.sub(r"\*\*(.+?)\*\*", r"\1", title or "").split())
 
 
 def safe_url(url: str | None) -> str | None:
@@ -192,6 +293,19 @@ Phrase = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, m
 
 class VoteBody(BaseModel):
     value: str
+
+
+class TopicsBody(BaseModel):
+    topics: list[str] = Field(max_length=40)
+
+
+class SaveBody(BaseModel):
+    saved: bool = True
+
+
+class MuteBody(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    muted: bool = True
 
 
 class ConfirmBody(BaseModel):
@@ -355,7 +469,8 @@ def create_app(
             "same-origin"  # no-referrer makes browsers send Origin: null
         )
         resp.headers["Content-Security-Policy"] = (
-            "default-src 'self'; img-src 'self' data:; style-src 'self'; "
+            "default-src 'self'; img-src 'self' data: https://i.ytimg.com; style-src 'self'; "
+            "frame-src https://www.youtube-nocookie.com; "
             "script-src 'self'; frame-ancestors 'none'; form-action 'self'"
         )
         if is_api:
@@ -439,9 +554,7 @@ def create_app(
         installed: bool | None = None
         via = None
         if sys.platform == "darwin":
-            from ..core.schedule import launchd_plist_path
-
-            installed, via = launchd_plist_path().exists(), "launchd"
+            installed, via = schedule_mod.launchd_plist_path().exists(), "launchd"
         return {"time": state["cfg"].schedule.time, "installed": installed, "via": via}
 
     def sandbox_info() -> dict[str, Any]:
@@ -581,7 +694,7 @@ def create_app(
         pid, model = split_ref(ref)
         try:
             p = c.provider(pid)
-            local = p.kind == "ollama" or urlsplit(p.base_url).hostname in LOOPBACK
+            local = runs_locally(p)
             name = p.name or p.id
         except KeyError:
             local, name = False, pid
@@ -612,12 +725,14 @@ def create_app(
             "pipeline": pipeline,
             "sources_count": n_sources,
             "projects": [p["name"] for p in profile_projects()],
+            "topics": digest_profile().topics,
             "schedule": schedule_info(),
             "sandbox": sandbox_info(),
             "thresholds": c.thresholds.model_dump(),
             "notes_subdir": c.notes_subdir,
             "data_dir": pretty_path(c.data_path()),
             "features": {"impact": "impact" in score_cols, "ideas": has_table("ideas")},
+            "setup": setup_mod.setup_status(c),
         }
 
     @app.get("/api/morning")
@@ -667,6 +782,142 @@ def create_app(
             "idea_items": idea_items,
             "projects": [p["name"] for p in projects],
         }
+
+    # -- the Digest (by topic) ----------------------------------------------------------------
+    def digest_profile() -> Profile:
+        try:
+            return load_profile(state["cfg"].profile_file())
+        except (FileNotFoundError, OSError, yaml.YAMLError):
+            return Profile(projects=[])
+
+    def story(row: sqlite3.Row, actions_day: set[int], full: bool) -> dict[str, Any]:
+        extra = _json(row["extra"], {})
+        judged = row["summary"] is not None
+        outline = _json(row["outline"], []) if judged else []
+        s: dict[str, Any] = {
+            "id": row["id"],
+            "source": row["source"],
+            "source_name": row["source_name"],
+            "title": plain_title(row["title"]),
+            "headline": row["headline"] if judged else None,
+            "url": safe_url(row["url"]),
+            "author": row["author"],
+            "published": row["published_at"],
+            "also_seen": _json(row["also_seen"], []),
+            "video_id": extra.get("video_id") if row["source"] == "youtube" else None,
+            "judged": judged,
+            "topic": row["digest_topic"] if judged else None,
+            "relevance": row["digest_relevance"] if judged else None,
+            "match": max(0.0, min(1.0, float(row["prefilter"] or 0.0))),
+            "summary": row["summary"] if judged else None,
+            "outline": [str(x) for x in outline if isinstance(x, str)][:5],
+            "saved": bool(row["saved_at"]),
+            "vote": store.item_feedback(row["id"]),
+        }
+        if full:
+            s["text"] = (row["text"] or "")[:900]
+        if row["id"] in actions_day and judged and row["impact"] in IMPACTS:
+            s["action"] = {
+                "kind": row["impact"],
+                "project": row["best_project"],
+                "score": row["best_score"],
+                "next_step": row["next_step"],
+            }
+        return s
+
+    @app.get("/api/digest")
+    def digest_view(day: str | None = None) -> Any:
+        c = state["cfg"]
+        days = sorted(set(store.first_seen_days()) | set(store.digest_days()), reverse=True)
+        if day is None:
+            day = days[0] if days else None
+        elif not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+            raise HTTPException(400, "day must be YYYY-MM-DD")
+        prof = digest_profile()
+        topics = prof.digest_topics
+        out: dict[str, Any] = {
+            "day": day,
+            "days": days,
+            "topics": prof.topics,
+            "digest_topics": topics,
+            "projects": prof.names,
+            "bar": c.thresholds.digest_bar,
+            "max": c.thresholds.digest_max,
+            "stories": [],
+            "rest": [],
+            "saved": [],
+            "stats": None,
+            "run": None,
+        }
+        weights = compute_weights(store)
+        saved = store.saved_items()
+        if day is not None:
+            try:
+                start, end = day_window(date.fromisoformat(day))
+            except ValueError as e:
+                raise HTTPException(400, "day must be a real date") from e
+            rows = store.items_between(start, end)
+            digest_row = store.digest(day)
+            actions_day = set(_json(digest_row["item_ids"], [])) if digest_row else set()
+            hidden = {r["id"] for r in rows if store.item_feedback(r["id"]) == -1}
+            stories, rest = split_digest(
+                rows, topics, weights, c.thresholds.digest_bar, c.thresholds.digest_max, hidden
+            )
+            out["stories"] = [story(r, actions_day, True) for r in stories]
+            out["rest"] = [story(r, actions_day, True) for r in rest]
+            run = None
+            if digest_row and digest_row["run_id"]:
+                run = store.conn.execute(
+                    "SELECT * FROM runs WHERE id=?", (digest_row["run_id"],)
+                ).fetchone()
+            elif rows:
+                run = store.conn.execute(
+                    "SELECT * FROM runs WHERE id=?", (rows[-1]["run_id"],)
+                ).fetchone()
+            out["run"] = run_dict(run)
+            out["stats"] = {
+                "new": len(rows),
+                "judged": sum(1 for r in rows if r["summary"] is not None),
+            }
+        out["saved"] = [story(r, set(), True) for r in saved]
+        return out
+
+    @app.get("/api/topics")
+    def get_topics() -> Any:
+        return {"topics": digest_profile().topics}
+
+    @app.put("/api/topics")
+    def put_topics(body: TopicsBody) -> Any:
+        if jobs.get("profile")["state"] == "running":
+            raise HTTPException(409, "A profile rebuild is running; save after it finishes.")
+        try:
+            topics = save_topics(state["cfg"].profile_file(), body.topics)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        return {"ok": True, "topics": topics}
+
+    @app.post("/api/item/{item_id}/save")
+    def save_item(item_id: int, body: SaveBody) -> Any:
+        if store.item(item_id) is None:
+            raise HTTPException(404, "No such item")
+        store.set_saved(item_id, body.saved)
+        return {"ok": True, "saved": body.saved}
+
+    @app.post("/api/source/mute")
+    def mute_source(body: MuteBody) -> Any:
+        known = store.conn.execute(
+            "SELECT 1 FROM items WHERE source_name=? LIMIT 1", (body.name,)
+        ).fetchone()
+        if known is None:
+            raise HTTPException(404, "No source by that name")
+        with store.tx() as conn:  # mute and unmute both start from a clean slate for the source
+            conn.execute(
+                "DELETE FROM feedback WHERE target_type='source' AND target=?", (body.name,)
+            )
+        if body.muted:
+            store.add_feedback("source", body.name, MUTE_VOTES, None)
+        w = compute_weights(store)
+        return {"ok": True, "name": body.name, "muted": w.muted(body.name)}
 
     @app.get("/api/run")
     def run_status() -> Any:
@@ -870,6 +1121,9 @@ def create_app(
             "yaml": text,
             "weights": weights_view(),
             "schedule": schedule_info(),
+            "look_back_default": c.thresholds.max_age_days,
+            "youtube_api_key": youtube_key_view() is not None,
+            "ytdlp": ytdlp_command() is not None,
         }
 
     @app.post("/api/sources/yaml")
@@ -968,6 +1222,13 @@ def create_app(
         state["cfg"] = load_config(config_path)
         state.pop("llm", None)  # roles or providers may have changed
 
+    # chat drawer (Track B)
+    from .chat_routes import register as register_chat
+
+    register_chat(
+        app, store=store, state=state, config_path=config_path, save_cfg=save_cfg, jobs=jobs
+    )
+
     @app.post("/api/sources/toggle")
     @config_writer
     def toggle_source(body: ToggleBody) -> Any:
@@ -979,19 +1240,86 @@ def create_app(
         save_cfg(c)
         return {"ok": True, "key": body.key, "enabled": body.enabled}
 
-    @app.post("/api/sources/add")
-    @config_writer
-    def add_source_route(body: AddSourceBody) -> Any:
-        c = load_config(config_path)
+    def scout_now(key: str, terms: list[str], look_back: int) -> dict[str, Any]:
+        """The one-off key-term search for a source; never raises (the source is saved)."""
+        c = state["cfg"]
         try:
             with PoliteClient(c.contact) as client:
-                label = add_source(c, body.type, body.value.strip()[:500], client)
+                res = run_scout(c, store, key, terms, client)
+            return {"scout": res.to_dict(look_back)}
+        except ScoutError as e:
+            return {"scout_error": str(e)}
+        except Exception as e:  # a search bug must not lose the saved source
+            log.exception("key-term search failed for %s", key)
+            return {"scout_error": f"The search failed ({type(e).__name__})."}
+
+    def set_scout(c: Config, key: str, look_back: int | None, terms: list[str]) -> list[str]:
+        """Store look back + terms for `key`; returns the terms that are new for it."""
+        if key.split(":", 1)[0] not in SCOUTABLE_TYPES:
+            raise HTTPException(
+                400, "Look back and key terms work on YouTube channels, feeds and subreddits."
+            )
+        try:
+            clean = clean_scout_terms(terms)
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
-        except SourceError as e:
-            raise HTTPException(400, f"Couldn't reach it: {e}") from e
-        save_cfg(c)
-        return {"ok": True, "label": label, "catalog": catalog()}
+        old = c.sources.scout.get(key)
+        was = {t.casefold() for t in (old.terms if old else [])}
+        if look_back is None and not clean:
+            c.sources.scout.pop(key, None)
+        else:
+            c.sources.scout[key] = ScoutSettings(look_back_days=look_back, terms=clean)
+        return [t for t in clean if t.casefold() not in was]
+
+    @app.post("/api/sources/add")
+    def add_source_route(body: AddSourceBody) -> Any:
+        settings = body.look_back_days is not None or body.scout_terms is not None
+        existing = False
+        with CONFIG_LOCK:
+            c = load_config(config_path)
+            try:
+                with PoliteClient(c.contact) as client:
+                    key, label = add_source_keyed(c, body.type, body.value.strip()[:500], client)
+            except AlreadyFollowing as e:
+                # Adding one you already follow with settings updates its settings.
+                if not (settings and e.key and e.key.split(":", 1)[0] in SCOUTABLE_TYPES):
+                    raise HTTPException(400, str(e)) from e
+                key, label, existing = e.key, e.label or e.key, True
+            except ValueError as e:
+                raise HTTPException(400, str(e)) from e
+            except SourceError as e:
+                raise HTTPException(400, f"Couldn't reach it: {e}") from e
+            terms: list[str] = []
+            if settings and key.split(":", 1)[0] in SCOUTABLE_TYPES:
+                # search the terms it didn't have (all of them for a new source)
+                terms = set_scout(c, key, body.look_back_days, body.scout_terms or [])
+            save_cfg(c)
+        look_back = body.look_back_days or state["cfg"].thresholds.max_age_days
+        out: dict[str, Any] = {"ok": True, "label": label, "key": key, "existing": existing}
+        if terms:
+            out.update(scout_now(key, terms, look_back))
+        out["catalog"] = catalog()
+        return out
+
+    @app.post("/api/sources/scout")
+    def scout_route(body: ScoutBody) -> Any:
+        """Change a source's look back / key terms. New terms on a YouTube channel are searched
+        across the whole channel once; on a feed, the feed is checked for them."""
+        with CONFIG_LOCK:
+            c = load_config(config_path)
+            if body.key not in {t.key for t in configured_tasks(c)}:
+                raise HTTPException(400, f"No source with key {body.key!r}.")
+            added = set_scout(c, body.key, body.look_back_days, body.scout_terms)
+            save_cfg(c)
+        out: dict[str, Any] = {"ok": True, "key": body.key}
+        if added:
+            out.update(
+                scout_now(
+                    body.key, added, body.look_back_days or state["cfg"].thresholds.max_age_days
+                )
+            )
+        out["catalog"] = catalog()
+        return out
 
     # -- ideas ----------------------------------------------------------------------------------
     @app.post("/api/ideas/{idea_id}/dismiss")
@@ -1018,12 +1346,7 @@ def create_app(
         return {"ok": True, "path": pretty_path(str(path))}
 
     # -- providers, keys, roles ----------------------------------------------------------------
-    def is_local(p: ProviderConfig) -> bool:
-        return p.kind == "ollama" or urlsplit(p.base_url).hostname in (
-            "127.0.0.1",
-            "localhost",
-            "::1",
-        )
+    is_local = runs_locally
 
     def quick_status(p: ProviderConfig) -> tuple[str, str | None]:
         """connected/offline for local servers (cheap); 'unknown' for remote ones."""
@@ -1042,10 +1365,15 @@ def create_app(
         return "connected", version
 
     def role_labels(c: Config) -> dict[str, str]:
-        names = {"judge": "Judge · Research", "fallback": "Fallback", "embed": "Embeddings"}
+        names = {
+            "judge": "Judge · Research",
+            "chat": "Chat",
+            "fallback": "Fallback",
+            "embed": "Embeddings",
+        }
         out: dict[str, str] = {}
         for role, label in names.items():
-            ref = c.role_ref(role)  # type: ignore[arg-type]
+            ref = c.roles.chat if role == "chat" else c.role_ref(role)  # type: ignore[arg-type]
             if ref:
                 out[ref] = f"{out[ref]} · {label}" if ref in out else label
         return out
@@ -1079,6 +1407,9 @@ def create_app(
         ids = [p.id for p in c.all_providers()]
         if "lmstudio" not in ids:
             ids.append("lmstudio")  # always offer the LM Studio card
+        for pid, pre in PRESETS.items():  # a key in the environment counts before it's saved
+            if pid not in ids and pre.api_key_env and os.environ.get(pre.api_key_env, "").strip():
+                ids.append(pid)
         for pid in ids:
             p = c.provider(pid) if pid in {x.id for x in c.all_providers()} else preset(pid)
             status, version = quick_status(p)
@@ -1114,8 +1445,23 @@ def create_app(
                     "configured": pid in {x.id for x in c.all_providers()},
                 }
             )
-        roles = {r: c.role_ref(r) for r in ("judge", "fallback", "embed")}  # type: ignore[misc]
-        return {"providers": out, "roles": roles, "keychain": have_keychain}
+        return {"providers": out, "roles": roles_view(c), "keychain": have_keychain}
+
+    def roles_view(c: Config) -> dict[str, str | None]:
+        """Effective refs; chat is "" while it follows the Judge."""
+        roles: dict[str, str | None] = {
+            r: c.role_ref(r)  # type: ignore[arg-type]
+            for r in ("judge", "fallback", "embed")
+        }
+        roles["chat"] = c.roles.chat or ""
+        return roles
+
+    def reset_roles(c: Config, provider_id: str) -> None:
+        """Roles on a removed provider go back to the defaults (Gemma; chat follows the Judge)."""
+        for role in ("judge", "fallback", "chat", "embed"):
+            ref = getattr(c.roles, role)
+            if ref and ref.split("/", 1)[0] == provider_id:
+                setattr(c.roles, role, None)
 
     @app.get("/api/providers")
     def get_providers() -> Any:
@@ -1142,7 +1488,7 @@ def create_app(
             raise HTTPException(400, "Ollama doesn't use an API key.")
         if body.model:
             m = body.model.strip()
-            if not m or len(m) > 200 or any(ch.isspace() for ch in m):
+            if not model_name_ok(m):
                 raise HTTPException(400, "That model name doesn't look right.")
             if m not in p.models:
                 p.models.append(m)
@@ -1165,10 +1511,7 @@ def create_app(
             raise HTTPException(503, str(e)) from e
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
-        for role in ("judge", "fallback", "chat", "embed"):  # roles on it go back to Gemma
-            ref = getattr(c.roles, role)
-            if ref and ref.split("/", 1)[0] == provider_id:
-                setattr(c.roles, role, None)
+        reset_roles(c, provider_id)  # roles on it go back to Gemma
         save_cfg(c)
         return {"ok": True}
 
@@ -1178,19 +1521,20 @@ def create_app(
         c = load_config(config_path)
         base = "".join(ch if ch.isalnum() else "-" for ch in body.name.lower()).strip("-")[:24]
         pid, n = base or "custom", 2
-        taken = {p.id for p in c.all_providers()} | set(PRESETS)
+        taken = {p.id for p in c.all_providers()} | set(PRESETS) | RESERVED_IDS
         while pid in taken:
             pid, n = f"{base[:20]}-{n}", n + 1
+        models = clean_models([*(body.models or []), *([body.model] if body.model else [])])
         try:
             p = ProviderConfig(
                 id=pid,
                 kind="openai_compatible",
-                name=body.name.strip()[:60],
+                name=provider_name(body.name),
                 base_url=body.base_url.strip(),
-                models=[body.model.strip()] if body.model and body.model.strip() else [],
+                models=models,
             )
         except ValidationError as e:
-            raise HTTPException(400, "; ".join(str(err["msg"]) for err in e.errors())[:300]) from e
+            raise HTTPException(400, pydantic_msg(e)) from e
         if body.api_key and body.api_key.strip():
             try:
                 set_key(pid, body.api_key)
@@ -1200,31 +1544,178 @@ def create_app(
         save_cfg(c)
         return {"ok": True, "id": pid}
 
+    def provider_name(raw: str) -> str:
+        name = " ".join(raw.split())
+        if not name:
+            raise HTTPException(400, "Give the provider a name.")
+        return name[:60]
+
+    def custom_provider(c: Config, pid: str) -> ProviderConfig:
+        """A provider added with "+ Add custom provider" (not a preset, not Ollama)."""
+        for p in c.providers:
+            if p.id == pid and pid not in PRESETS and p.kind == "openai_compatible":
+                return p
+        raise HTTPException(404, f"No custom provider {pid!r}")
+
+    def stored_key(c: Config, pid: str | None, base_url: str) -> str | None:
+        """The saved key of custom provider `pid`, but only for the address it was saved
+        for: a changed host never receives the old key."""
+        if not pid:
+            return None
+        try:
+            p = custom_provider(c, pid)
+        except HTTPException:
+            return None
+        if not same_origin(p.base_url, base_url):
+            return None
+        try:
+            return get_key(p.id, p.api_key_env)
+        except SecretStoreUnavailable:
+            return None
+
+    def draft_provider(name: str, base_url: str, models: list[str], pid: str) -> ProviderConfig:
+        try:
+            return ProviderConfig(
+                id=pid,
+                kind="openai_compatible",
+                name=name,
+                base_url=base_url.strip(),
+                models=models,
+            )
+        except ValidationError as e:
+            raise HTTPException(400, pydantic_msg(e)) from e
+
+    @app.get("/api/providers/{provider_id}/models")
+    def live_models(provider_id: str) -> Any:
+        """What the provider offers right now, ticked where it's offered for roles."""
+        c = state["cfg"]
+        if provider_id in {p.id for p in c.all_providers()}:
+            p = c.provider(provider_id)
+        elif provider_id in PRESETS:
+            p = preset(provider_id)
+        else:
+            raise HTTPException(404, f"No provider {provider_id!r}")
+        if p.kind == "ollama":
+            raise HTTPException(400, "Ollama lists its own models; pull one instead.")
+        try:
+            key = get_key(p.id, p.api_key_env)
+        except SecretStoreUnavailable:
+            key = None
+        if not key and not runs_locally(p):
+            raise HTTPException(400, f"Add a {p.label} API key first.")
+        try:
+            models = fetch_models(p, key)
+        except (ModelUnavailable, ModelError) as e:
+            raise HTTPException(502, f"{p.label}: {e}") from None
+        offered = list(p.models)
+        listed = {m["id"] for m in models}
+        out = [{**m, "offered": m["id"] in offered} for m in models]
+        out += [{"id": m, "offered": True} for m in offered if m not in listed]
+        return {"models": out}
+
     @app.put("/api/providers/{provider_id}/models")
     @config_writer
-    def add_provider_model(provider_id: str, body: ModelBody) -> Any:
+    def set_provider_models(provider_id: str, body: ModelBody) -> Any:
+        """{models: [...]} replaces the offered list; {model} appends one (LM Studio, Setup)."""
         c = load_config(config_path)
         p = ensure_provider(c, provider_id)
         if p.kind == "ollama":
             raise HTTPException(400, "Ollama lists its own models; pull one instead.")
-        m = body.model.strip()
-        if not m or len(m) > 200 or any(ch.isspace() for ch in m):
-            raise HTTPException(400, "That model name doesn't look right.")
-        if m not in p.models:
-            p.models.append(m)
+        if body.models is not None:
+            p.models = clean_models(body.models)
+        else:
+            m = (body.model or "").strip()
+            if not model_name_ok(m):
+                raise HTTPException(400, "That model name doesn't look right.")
+            if m not in p.models:
+                p.models.append(m)
+        save_cfg(c)
+        return {"ok": True, "models": p.models}
+
+    @app.put("/api/providers/{provider_id}")
+    @config_writer
+    def edit_provider(provider_id: str, body: EditProvider) -> Any:
+        c = load_config(config_path)
+        old = custom_provider(c, provider_id)
+        new = draft_provider(
+            provider_name(body.name), body.base_url, clean_models(body.models), provider_id
+        )
+        new.api_key_env = old.api_key_env
+        key = (body.api_key or "").strip()
+        dropped = False
+        try:
+            if key:
+                set_key(provider_id, key)
+            elif not same_origin(old.base_url, new.base_url):
+                dropped = delete_key(provider_id)  # the old key belonged to the old host
+        except SecretStoreUnavailable as e:
+            if key or keychain_available():
+                raise HTTPException(503, str(e)) from e
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        c.providers = [new if p.id == provider_id else p for p in c.providers]
+        save_cfg(c)
+        return {"ok": True, "id": provider_id, "key_dropped": dropped}
+
+    @app.delete("/api/providers/{provider_id}")
+    @config_writer
+    def remove_provider(provider_id: str) -> Any:
+        """Remove a provider and its keychain key; roles that used it go back to the defaults."""
+        c = load_config(config_path)
+        if provider_id == "ollama":
+            raise HTTPException(400, "The built-in Ollama provider can't be removed.")
+        if provider_id not in {p.id for p in c.providers}:
+            raise HTTPException(404, f"No provider {provider_id!r}")
+        try:
+            delete_key(provider_id)
+        except SecretStoreUnavailable as e:
+            if keychain_available():  # a key may be there and we couldn't remove it
+                raise HTTPException(503, str(e)) from e
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        c.providers = [p for p in c.providers if p.id != provider_id]
+        reset_roles(c, provider_id)
         save_cfg(c)
         return {"ok": True}
 
-    @app.post("/api/providers/{provider_id}/test")
-    def test_provider_route(provider_id: str) -> Any:
+    @app.post("/api/providers/probe-models")
+    def probe_models(body: ProbeBody) -> Any:
+        """The custom-provider sheet's "Fetch models": list a server's models before saving."""
         c = state["cfg"]
+        p = draft_provider("draft", body.base_url, [], "draft")
+        key = (body.api_key or "").strip() or stored_key(c, body.id, p.base_url)
+        try:
+            models = fetch_models(p, key)
+        except (ModelUnavailable, ModelError) as e:
+            raise HTTPException(502, str(e)) from None
+        return {"models": [{"id": m["id"]} for m in models]}
+
+    @app.post("/api/providers/test-draft")
+    def test_draft(body: DraftBody) -> Any:
+        """Health → Auth → Chat for the sheet's values, without saving anything."""
+        c = state["cfg"].model_copy(deep=True)
+        pid = body.id if body.id and body.id in {p.id for p in c.providers} else "draft-test"
+        if pid != "draft-test":
+            custom_provider(c, pid)  # 404 unless it's a custom provider
+        p = draft_provider(provider_name(body.name), body.base_url, clean_models(body.models), pid)
+        key = (body.api_key or "").strip() or stored_key(state["cfg"], body.id, p.base_url)
+        c.providers = [x for x in c.providers if x.id != pid] + [p]
+        steps = test_provider(c, pid, api_key=key)
+        return {"steps": [s.to_dict() for s in steps]}
+
+    @app.post("/api/providers/{provider_id}/test")
+    def test_provider_route(provider_id: str, body: ProviderTestBody | None = None) -> Any:
+        c = state["cfg"]
+        model = (body.model or "").strip() if body else ""
+        if model and (len(model) > 200 or any(ch.isspace() for ch in model)):
+            raise HTTPException(400, "That model name doesn't look right.")
         known = {p.id for p in c.all_providers()}
         if provider_id not in known and provider_id not in PRESETS:
             raise HTTPException(404, f"No provider {provider_id!r}")
         if provider_id not in known:  # e.g. LM Studio before it's added: test the preset
             c = c.model_copy(deep=True)
             c.providers.append(preset(provider_id))
-        steps = test_provider(c, provider_id)
+        steps = test_provider(c, provider_id, model=model or None)
         return {"steps": [s.to_dict() for s in steps]}
 
     @app.put("/api/roles")
@@ -1232,6 +1723,9 @@ def create_app(
     def put_roles(body: RolesBody) -> Any:
         c = load_config(config_path)
         for role, ref in body.model_dump(exclude_none=True).items():
+            if role == "chat" and not ref.strip():
+                c.roles.chat = None  # follow the Judge
+                continue
             try:
                 pid, _model = split_ref(ref)
                 p = c.provider(pid)
@@ -1241,10 +1735,7 @@ def create_app(
                 raise HTTPException(400, "Embeddings stay on this machine.")
             setattr(c.roles, role, ref)
         save_cfg(c)
-        return {
-            "ok": True,
-            "roles": {r: state["cfg"].role_ref(r) for r in ("judge", "fallback", "embed")},
-        }  # type: ignore[misc]
+        return {"ok": True, "roles": roles_view(state["cfg"])}
 
     # -- ollama models and pull ---------------------------------------------------------------
     pulls: dict[str, dict[str, Any]] = {}
@@ -1290,6 +1781,134 @@ def create_app(
     def pull_status(name: str) -> Any:
         job = jobs.get(f"pull:{name}")
         return {**job, **pulls.get(name, {})}
+
+    # -- setup walkthrough ---------------------------------------------------------------------
+    def setup_project_rows(c: Config) -> list[dict[str, Any]]:
+        profiled = setup_mod.profiled_names(c.profile_file())
+        rows = []
+        for ref in c.projects:
+            name = setup_mod.project_name(ref)
+            root = ref.resolved()
+            rows.append(
+                {
+                    "name": name,
+                    "path": pretty_path(str(root)),
+                    "exists": root.is_dir(),
+                    "found": setup_mod.project_files(root) if root.is_dir() else [],
+                    "profiled": name in profiled,
+                    "read": jobs.get(f"read:{name}"),
+                }
+            )
+        return rows
+
+    @app.get("/api/setup")
+    def setup_view() -> Any:
+        c = state["cfg"]
+        suggestions = [{**s, "path": pretty_path(s["path"])} for s in setup_mod.suggest_projects(c)]
+        return {
+            **setup_mod.setup_status(c),
+            "projects": setup_project_rows(c),
+            "suggestions": suggestions,
+            "schedule": schedule_info(),
+            "platform": sys.platform,
+        }
+
+    @app.post("/api/projects/add")
+    @config_writer
+    def add_project_route(body: AddProjectBody) -> Any:
+        c = load_config(config_path)
+        try:
+            ref, found = setup_mod.add_project(c, body.path)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        save_cfg(c)
+        name = setup_mod.project_name(ref)
+        return {
+            "ok": True,
+            "project": {"name": name, "path": pretty_path(str(ref.resolved())), "found": found},
+        }
+
+    @app.delete("/api/projects/{name}")
+    @config_writer
+    def remove_project_route(name: str) -> Any:
+        if jobs.get("profile")["state"] == "running" or jobs.get(f"read:{name}")["state"] == (
+            "running"
+        ):
+            raise HTTPException(409, "Gemma is reading projects; try again when it's done.")
+        c = load_config(config_path)
+        try:
+            setup_mod.remove_project(c, name)
+        except KeyError as e:
+            raise HTTPException(404, f"No project named {name!r}") from e
+        try:
+            setup_mod.remove_profile_entry(c.profile_file(), name)
+        except (ValueError, yaml.YAMLError) as e:
+            raise HTTPException(500, str(e)) from e
+        save_cfg(c)
+        return {"ok": True, "name": name}
+
+    @app.post("/api/projects/{name}/read")
+    def read_project(name: str) -> Any:
+        if jobs.get("profile")["state"] == "running":
+            raise HTTPException(409, "A profile rebuild is running; try again when it's done.")
+        c = state["cfg"]
+        try:
+            ref = setup_mod.find_project(c, name)
+        except KeyError as e:
+            raise HTTPException(404, f"No project named {name!r}") from e
+        if not ref.resolved().is_dir():
+            raise HTTPException(400, f"The folder for {name!r} isn't there any more.")
+
+        def work() -> None:
+            entry = profile_project(ref, llm())
+            entry["name"] = name  # keep the name the config uses
+            setup_mod.upsert_profile_entry(state["cfg"].profile_file(), entry)
+
+        started = jobs.start(f"read:{name}", work)
+        return {"ok": True, "started": started, **jobs.get(f"read:{name}")}
+
+    @app.get("/api/projects/{name}/read")
+    def read_project_status(name: str) -> Any:
+        return jobs.get(f"read:{name}")
+
+    @app.get("/api/schedule")
+    def schedule_view() -> Any:
+        out: dict[str, Any] = schedule_info()
+        out["plist"] = None
+        if sys.platform == "darwin":
+            raw = schedule_mod.launchd_plist(state["cfg"], config_path).decode()
+            home = str(Path.home())
+            out["plist"] = raw.replace(home, "~")
+            out["plist_path"] = pretty_path(schedule_mod.launchd_plist_path())
+        return out
+
+    @app.put("/api/schedule")
+    @config_writer
+    def put_schedule(body: ScheduleBody) -> Any:
+        c = load_config(config_path)
+        try:
+            c.schedule = Schedule(time=body.time)
+        except ValidationError as e:
+            raise HTTPException(400, "Use 24-hour time, like 04:30.") from e
+        save_cfg(c)
+        info = schedule_info()
+        if body.nightly:
+            message = schedule_mod.install(state["cfg"], config_path)
+        elif info["installed"]:
+            message = schedule_mod.uninstall()
+        else:
+            message = "Not scheduled. Run it with `night-scout run` whenever you like."
+        return {"ok": True, "message": message, "schedule": schedule_info()}
+
+    @app.post("/api/run")
+    def run_now() -> Any:
+        if run_status()["running"]:
+            raise HTTPException(409, "The scout is already out.")
+        # Same rule as the pipeline: topics alone are enough (the Digest), projects add Actions.
+        if not profile_projects() and not digest_profile().topics:
+            raise HTTPException(400, "Add a topic or a project first.")
+        pid = setup_mod.start_run(state["cfg"], config_path)
+        return {"ok": True, "pid": pid}
 
     # -- not wired yet --------------------------------------------------------------------
     def not_yet() -> JSONResponse:

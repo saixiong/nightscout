@@ -132,6 +132,23 @@ def delete_key(provider_id: str) -> bool:
     return True
 
 
+class Secret:
+    """Holds an API key; prints as bullets."""
+
+    __slots__ = ("_value",)
+
+    def __init__(self, value: str) -> None:
+        self._value = value
+
+    def get(self) -> str:
+        return self._value
+
+    def __repr__(self) -> str:
+        return "<secret>"
+
+    __str__ = __repr__
+
+
 def masked(key: str | None) -> str:
     """first4••••••••last4 for display; short keys are all bullets."""
     if not key:

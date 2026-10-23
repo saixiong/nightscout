@@ -1,10 +1,12 @@
-"""Model providers: local Ollama plus any OpenAI-compatible server (LM Studio, OpenRouter, ...).
+"""Model providers: local Ollama, any OpenAI-compatible server (LM Studio, OpenRouter, Gemini,
+...) and Anthropic's native API.
 
 Build clients through `make_llm(cfg, role)` and `make_embedder(cfg)`; with no `providers:` or
 `roles:` in config.yaml they return exactly the OllamaClient the app always used.
 
 API keys come from `secrets.get_key` at construction time and are only ever placed in the
-Authorization header. They never appear in repr(), log lines or exception messages.
+Authorization header (x-api-key for Anthropic). They never appear in repr(), log lines or
+exception messages.
 """
 
 from __future__ import annotations
@@ -21,13 +23,16 @@ from urllib.parse import urlsplit
 import httpx
 from pydantic import BaseModel, ValidationError
 
-from . import secrets
+from . import anthropic, secrets
+from .anthropic import AnthropicClient
 from .config import Config, ProviderConfig, RoleName, split_ref
 from .llm import (
     LLM,
     ModelError,
     ModelUnavailable,
     OllamaClient,
+    ToolReply,
+    _parse_tool_calls,
     _short_error,
     _strip_fences,
     _with_schema_hint,
@@ -59,11 +64,66 @@ PRESETS: dict[str, ProviderConfig] = {
         base_url="https://openrouter.ai/api/v1",
         api_key_env="OPENROUTER_API_KEY",
     ),
+    # Native Messages API. base_url is only overridden in config.yaml by tests (fake server).
+    "anthropic": ProviderConfig(
+        id="anthropic",
+        kind="anthropic",
+        name="Anthropic",
+        base_url=anthropic.DEFAULT_BASE_URL,
+        api_key_env="ANTHROPIC_API_KEY",
+    ),
+    # Gemini through Google's OpenAI-compatible endpoint (ai.google.dev/gemini-api/docs/openai).
+    "google": ProviderConfig(
+        id="google",
+        kind="openai_compatible",
+        name="Google Gemini",
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        api_key_env="GEMINI_API_KEY",
+    ),
+    "deepseek": ProviderConfig(
+        id="deepseek",
+        kind="openai_compatible",
+        name="DeepSeek",
+        base_url="https://api.deepseek.com",
+        api_key_env="DEEPSEEK_API_KEY",
+    ),
+    "groq": ProviderConfig(
+        id="groq",
+        kind="openai_compatible",
+        name="Groq",
+        base_url="https://api.groq.com/openai/v1",
+        api_key_env="GROQ_API_KEY",
+    ),
+    "mistral": ProviderConfig(
+        id="mistral",
+        kind="openai_compatible",
+        name="Mistral",
+        base_url="https://api.mistral.ai/v1",
+        api_key_env="MISTRAL_API_KEY",
+    ),
+    "xai": ProviderConfig(
+        id="xai",
+        kind="openai_compatible",
+        name="xAI (Grok)",
+        base_url="https://api.x.ai/v1",
+        api_key_env="XAI_API_KEY",
+    ),
 }
+
+
+CLOUD_PRESETS = frozenset(k for k, p in PRESETS.items() if not p.is_local)
 
 
 def preset(key: str) -> ProviderConfig:
     return PRESETS[key].model_copy(deep=True)
+
+
+def runs_locally(provider: ProviderConfig) -> bool:
+    """Do calls to this provider stay on this machine? Ollama and loopback servers do. A cloud
+    preset never does, even with a loopback base_url: a local proxy still forwards to the cloud."""
+    if provider.id in CLOUD_PRESETS:
+        return False
+    return provider.kind == "ollama" or provider.is_local
 
 
 class Embedder(Protocol):
@@ -72,21 +132,7 @@ class Embedder(Protocol):
     def has_embed_model(self) -> bool: ...
 
 
-class _Secret:
-    """Holds an API key; prints as bullets."""
-
-    __slots__ = ("_value",)
-
-    def __init__(self, value: str) -> None:
-        self._value = value
-
-    def get(self) -> str:
-        return self._value
-
-    def __repr__(self) -> str:
-        return "<secret>"
-
-    __str__ = __repr__
+_Secret = secrets.Secret
 
 
 # A 400/422 that means "this server can't do response_format/json_schema".
@@ -278,6 +324,30 @@ class OpenAICompatClient:
             raise ModelError("empty response")
         return text
 
+    def chat_tools(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> ToolReply:
+        """One turn of a chat with tools over /chat/completions."""
+        body: dict[str, Any] = {
+            "model": self.model_name,
+            "messages": [_openai_message(m) for m in messages],
+            "stream": False,
+            "temperature": 0.3,
+            "max_tokens": 1200,
+        }
+        if tools:
+            body["tools"] = tools
+        self.calls += 1
+        resp = self._request("POST", "/chat/completions", json=body)
+        self._check(resp, self.model_name)
+        try:
+            msg = resp.json()["choices"][0]["message"]
+            calls = _parse_tool_calls(msg.get("tool_calls"))
+        except (ValueError, KeyError, IndexError, TypeError, AttributeError) as e:
+            raise ModelError("unexpected response shape from the model server") from e
+        content = msg.get("content")
+        if isinstance(content, list):  # some servers return content parts
+            content = "".join(str(p.get("text", "")) for p in content if isinstance(p, dict))
+        return ToolReply(content=str(content or ""), tool_calls=calls)
+
     def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
@@ -304,6 +374,34 @@ class OpenAICompatClient:
 def _clean(e: Exception) -> Exception | None:
     """httpx errors carry the request (and so its headers); don't chain them as-is."""
     return None if isinstance(e, httpx.RequestError) else e
+
+
+def _openai_message(m: dict[str, Any]) -> dict[str, Any]:
+    """A provider-neutral chat message in the OpenAI /chat/completions shape."""
+    role = m["role"]
+    if role == "tool":
+        return {
+            "role": "tool",
+            "tool_call_id": m.get("tool_call_id") or m.get("name", ""),
+            "content": str(m.get("content") or ""),
+        }
+    out: dict[str, Any] = {"role": role, "content": str(m.get("content") or "")}
+    if role == "user" and m.get("images"):  # vision: text part + one image_url part per image
+        out["content"] = [{"type": "text", "text": out["content"]}] + [
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{i}"}}
+            for i in m["images"]
+        ]
+    if role == "assistant" and m.get("tool_calls"):
+        out["content"] = out["content"] or None
+        out["tool_calls"] = [
+            {
+                "id": tc.id or f"call_{i}",
+                "type": "function",
+                "function": {"name": tc.name, "arguments": json.dumps(tc.arguments)},
+            }
+            for i, tc in enumerate(m["tool_calls"])
+        ]
+    return out
 
 
 def _message_content(resp: httpx.Response) -> str:
@@ -383,6 +481,16 @@ class FallbackLLM:
     def chat_text(self, system: str, user: str) -> str:
         return self._call(lambda m: m.chat_text(system, user))
 
+    def chat_tools(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> ToolReply:
+        def call(m: LLM) -> ToolReply:
+            fn = getattr(m, "chat_tools", None)
+            if fn is None:
+                raise ModelError(f"{m.model_name} can't use tools")
+            reply: ToolReply = fn(messages, tools)
+            return reply
+
+        return self._call(call)
+
     # Vectors from two different models don't compare, so embeddings stay on the primary.
     def embed(self, texts: list[str]) -> list[list[float]]:
         return self.primary.embed(texts)
@@ -443,6 +551,14 @@ def _client_for(
         return _ollama_client(
             cfg, provider, model, fallback_model, embed or cfg.model.embed, transport
         )
+    if provider.kind == "anthropic":
+        return AnthropicClient(
+            provider,
+            model,
+            api_key=_api_key(provider),
+            timeout_s=cfg.model.timeout_s,
+            transport=transport,
+        )
     return OpenAICompatClient(
         provider,
         model,
@@ -488,6 +604,8 @@ def make_embedder(cfg: Config, transport: httpx.BaseTransport | None = None) -> 
         fb = cfg.role_ref("fallback")
         fallback = split_ref(fb)[1] if fb and split_ref(fb)[0] == pid else ""
         return _ollama_client(cfg, provider, name, fallback, model, transport)
+    if provider.kind == "anthropic":  # no embeddings there: every embed() call raises
+        return AnthropicClient(provider, model, api_key=_api_key(provider), transport=transport)
     return OpenAICompatClient(
         provider,
         model,
@@ -534,15 +652,32 @@ def _model_for(cfg: Config, provider_id: str) -> str | None:
     return None
 
 
+_STORED = object()  # test_provider(api_key=...) default: read the key from the keychain/env
+
+
+def _auth_headers(provider: ProviderConfig, key: str | None) -> dict[str, str]:
+    if provider.kind == "anthropic":
+        return anthropic.headers(key)
+    return {"Authorization": f"Bearer {key}"} if key else {}
+
+
+def _models_path(provider: ProviderConfig) -> str:
+    return {"ollama": "/api/tags", "anthropic": "/v1/models"}.get(provider.kind, "/models")
+
+
 def test_provider(
     cfg: Config,
     provider_id: str,
     *,
     model: str | None = None,
+    api_key: Any = _STORED,
     transport: httpx.BaseTransport | None = None,
 ) -> list[Step]:
     """Health → Auth → Chat (a tiny prompt). Stops at the first failure; the rest are
-    reported as skipped. Never raises for provider problems and never echoes the key."""
+    reported as skipped. Never raises for provider problems and never echoes the key.
+
+    `api_key` tests a key that isn't saved yet (a draft in the custom-provider sheet);
+    None means "no key". By default the stored key (env var, then keychain) is used."""
     provider = cfg.provider(provider_id)
     steps: list[Step] = []
     key: str | None = None
@@ -558,9 +693,11 @@ def test_provider(
 
         # Health
         t0 = time.monotonic()
-        path = "/api/version" if provider.kind == "ollama" else "/models"
+        path = "/api/version" if provider.kind == "ollama" else _models_path(provider)
         try:
-            resp = http.get(path)
+            resp = http.get(
+                path, headers=anthropic.headers(None) if provider.kind == "anthropic" else None
+            )
         except httpx.HTTPError as e:
             hint = (
                 f"Is {provider.label} running?"
@@ -590,12 +727,17 @@ def test_provider(
         if provider.kind == "ollama":
             steps.append(Step("Auth", True, "Not needed for Ollama"))
         else:
-            try:
-                key = secrets.get_key(provider.id, provider.api_key_env)
-            except secrets.SecretStoreUnavailable as e:
-                steps.append(Step("Auth", False, str(e)))
-                return _skip(steps, "no API key")
-            source = secrets.key_source(provider.id, provider.api_key_env) if key else None
+            where = "the form"
+            if api_key is _STORED:
+                try:
+                    key = secrets.get_key(provider.id, provider.api_key_env)
+                except secrets.SecretStoreUnavailable as e:
+                    steps.append(Step("Auth", False, str(e)))
+                    return _skip(steps, "no API key")
+                source = secrets.key_source(provider.id, provider.api_key_env) if key else None
+                where = f"env {provider.api_key_env}" if source == "env" else "keychain"
+            else:
+                key = str(api_key).strip() if api_key else None
             if not key:
                 if provider.is_local:
                     steps.append(Step("Auth", True, "No key set; not needed for a local server"))
@@ -604,25 +746,39 @@ def test_provider(
                     steps.append(Step("Auth", False, f"No API key yet. Add one in Settings{env}."))
                     return _skip(steps, "no API key")
             else:
-                headers["Authorization"] = f"Bearer {key}"
+                headers = _auth_headers(provider, key)
                 host = (urlsplit(provider.base_url).hostname or "").lower()
-                auth_path = "/key" if host.endswith("openrouter.ai") else "/models"
-                where = f"env {provider.api_key_env}" if source == "env" else "keychain"
+                auth_path = "/key" if host.endswith("openrouter.ai") else _models_path(provider)
                 try:
                     resp = http.get(auth_path, headers=headers)
                 except httpx.HTTPError as e:
                     steps.append(Step("Auth", False, f"Auth check failed ({type(e).__name__})"))
                     return _skip(steps, "auth check failed")
                 if resp.status_code in (401, 403):
+                    what = (
+                        "Invalid API key"
+                        if provider.kind == "anthropic" and resp.status_code == 401
+                        else "The server rejected the API key"
+                    )
                     steps.append(
                         Step(
                             "Auth",
                             False,
-                            f"The server rejected the API key (HTTP {resp.status_code}). "
+                            f"{what} (HTTP {resp.status_code}). "
                             "Check it was copied in full and is still active.",
                         )
                     )
                     return _skip(steps, "key rejected")
+                if 300 <= resp.status_code < 400:  # not followed: it would replay the key
+                    steps.append(
+                        Step(
+                            "Auth",
+                            False,
+                            f"The server answered with a redirect (HTTP {resp.status_code}). "
+                            "Check the base URL.",
+                        )
+                    )
+                    return _skip(steps, "redirect")
                 if resp.status_code < 400:
                     detail = f"Key accepted ({secrets.masked(key)}, from {where})"
                 else:
@@ -633,14 +789,17 @@ def test_provider(
                 steps.append(Step("Auth", True, safe(detail)))
 
         # Chat
-        name = model or _model_for(cfg, provider.id) or _first_model(http, provider, headers)
+        name = (
+            model
+            or _model_for(cfg, provider.id)
+            or (provider.models[0] if provider.models else "")
+            or _first_model(http, provider, headers)
+        )
         if not name:
-            steps.append(Step("Chat", False, "No model to try: pick one for a role first."))
+            steps.append(Step("Chat", False, "No model to try: offer one for roles first."))
             return steps
-        messages = [
-            {"role": "system", "content": "You are a connection test. Reply with one word."},
-            {"role": "user", "content": "Say OK."},
-        ]
+        system = "You are a connection test. Reply with one word."
+        messages = [{"role": "system", "content": system}, {"role": "user", "content": "Say OK."}]
         t0 = time.monotonic()
         chat_timeout = httpx.Timeout(max(cfg.model.timeout_s, 30.0), connect=5.0)
         try:
@@ -655,6 +814,18 @@ def test_provider(
                         "keep_alive": cfg.model.keep_alive,
                         "options": {"temperature": 0, "num_predict": 16},
                     },
+                    timeout=chat_timeout,
+                )
+            elif provider.kind == "anthropic":
+                resp = http.post(
+                    "/v1/messages",
+                    json={
+                        "model": name,
+                        "max_tokens": 16,
+                        "system": system,
+                        "messages": messages[1:],
+                    },
+                    headers=headers,
                     timeout=chat_timeout,
                 )
             else:
@@ -684,19 +855,21 @@ def test_provider(
         elif resp.status_code == 404:
             hint = " Pull it from the Ollama models list." if provider.kind == "ollama" else ""
             steps.append(Step("Chat", False, f"{name} isn't available on {provider.label}.{hint}"))
-        elif resp.status_code >= 400:
+        elif resp.status_code >= 300:
+            text = anthropic.error_detail(resp) if provider.kind == "anthropic" else resp.text
             steps.append(
-                Step("Chat", False, safe(f"{name}: HTTP {resp.status_code}: {resp.text[:160]}"))
+                Step("Chat", False, safe(f"{name}: HTTP {resp.status_code}: {text[:160]}"))
             )
         else:
             try:
                 data = resp.json()
-                reply = (
-                    data["message"]["content"]
-                    if provider.kind == "ollama"
-                    else _message_content(resp)
-                )
-            except (ValueError, KeyError, TypeError, ModelError):
+                if provider.kind == "ollama":
+                    reply = data["message"]["content"]
+                elif provider.kind == "anthropic":
+                    reply = anthropic.reply_text(data)
+                else:
+                    reply = _message_content(resp)
+            except (ValueError, KeyError, TypeError, AttributeError, ModelError):
                 steps.append(Step("Chat", False, f"{name}: unexpected response shape"))
                 return steps
             reply = " ".join(str(reply).split())[:60]
@@ -712,10 +885,131 @@ def _first_model(http: httpx.Client, provider: ProviderConfig, headers: dict[str
         if provider.kind == "ollama":
             models = http.get("/api/tags").json().get("models", [])
             return str(models[0]["name"]) if models else ""
-        data = http.get("/models", headers=headers).json().get("data", [])
-        return str(data[0]["id"]) if data else ""
+        resp = http.get(_models_path(provider), headers=headers)
+        ids = [str(m["id"]) for m in resp.json().get("data", []) if m.get("id")]
     except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError, AttributeError):
         return ""
+    if provider.kind == "anthropic":  # the cheapest model is plenty for "Say OK."
+        ids.sort(key=lambda i: "haiku" not in i)
+    return _bare(ids[0]) if ids else ""
+
+
+# -- live model lists (Settings → AI Providers → Models ▾, custom "Fetch models") --------------
+def _bare(model_id: str) -> str:
+    """Gemini's OpenAI-compatible /models says 'models/gemini-…'; chat wants the bare id."""
+    return model_id[len("models/") :] if model_id.startswith("models/") else model_id
+
+
+def _first_int(*values: Any) -> int:
+    for v in values:
+        if isinstance(v, int) and not isinstance(v, bool) and v > 0:
+            return v
+    return 0
+
+
+def context_label(tokens: int) -> str:
+    """200000 → '200K', 1048576 → '1M' (approximate, for a pill)."""
+    if tokens >= 1_000_000:
+        return f"{tokens / 1_000_000:.1f}".rstrip("0").rstrip(".") + "M"
+    return f"{max(1, round(tokens / 1000))}K"
+
+
+def _dict(v: Any) -> dict[str, Any]:
+    return v if isinstance(v, dict) else {}
+
+
+def model_entry(raw: Any) -> dict[str, Any] | None:
+    """One /models item from any provider → {id, name?, context?, vision?}; junk → None.
+    Knows OpenRouter, Groq, Mistral, DeepSeek and Anthropic field names."""
+    if not isinstance(raw, dict):
+        return None
+    mid = _bare(str(raw.get("id") or "").strip())
+    if not mid or len(mid) > 200 or any(ch.isspace() for ch in mid):
+        return None
+    out: dict[str, Any] = {"id": mid}
+    name = str(raw.get("display_name") or raw.get("name") or "").strip()
+    if name and name != mid:
+        out["name"] = name[:120]
+    ctx = _first_int(
+        raw.get("context_length"),
+        raw.get("context_window"),
+        raw.get("max_context_length"),
+        raw.get("max_input_tokens"),
+    )
+    if ctx:
+        out["context"] = context_label(ctx)
+    caps = _dict(raw.get("capabilities"))
+    arch = _dict(raw.get("architecture"))
+    image_input = _dict(caps.get("image_input"))
+    modalities = arch.get("input_modalities") or raw.get("input_modalities") or []
+    if (
+        caps.get("vision") is True
+        or image_input.get("supported") is True
+        or (isinstance(modalities, list) and "image" in modalities)
+    ):
+        out["vision"] = True
+    return out
+
+
+def fetch_models(
+    provider: ProviderConfig,
+    api_key: str | None,
+    transport: httpx.BaseTransport | None = None,
+) -> list[dict[str, Any]]:
+    """Ask the provider for its models right now. Raises ModelUnavailable (unreachable, key
+    refused) or ModelError (anything else), with the key scrubbed from every message."""
+    if provider.kind == "ollama":
+        raise ModelError("Ollama lists its own models.")
+    headers = _auth_headers(provider, api_key)
+    path = _models_path(provider)
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    with httpx.Client(
+        base_url=provider.base_url.rstrip("/"),
+        timeout=httpx.Timeout(20.0, connect=5.0),
+        transport=transport,
+        follow_redirects=False,
+    ) as http:
+        params: dict[str, Any] = {"limit": 1000} if provider.kind == "anthropic" else {}
+        for _page in range(5):  # Anthropic pages; the others answer in one go
+            try:
+                resp = http.get(path, headers=headers, params=params)
+            except httpx.HTTPError as e:
+                raise ModelUnavailable(
+                    f"Can't reach {provider.base_url} ({type(e).__name__})."
+                ) from None
+            code = resp.status_code
+            if code == 401 and provider.kind == "anthropic":
+                raise ModelUnavailable("Invalid API key (HTTP 401).")
+            if code in (401, 403):
+                raise ModelUnavailable(f"The server rejected the API key (HTTP {code}).")
+            if 300 <= code < 400:
+                raise ModelError(
+                    f"The server answered with a redirect (HTTP {code}); not following it."
+                )
+            if code == 404:
+                raise ModelError(
+                    "This server doesn't list its models (HTTP 404). Type them instead."
+                )
+            if code >= 400:
+                text = anthropic.error_detail(resp) if provider.kind == "anthropic" else resp.text
+                raise ModelError(secrets.scrub(f"HTTP {code}: {text[:160]}", api_key))
+            try:
+                data = resp.json()
+                rows = data.get("data") if isinstance(data, dict) else data
+                if not isinstance(rows, list):
+                    raise TypeError("no list")
+            except (ValueError, TypeError) as e:
+                raise ModelError("The server's model list wasn't in the expected format.") from e
+            for row in rows:
+                entry = model_entry(row)
+                if entry and entry["id"] not in seen and len(out) < 3000:
+                    seen.add(entry["id"])
+                    out.append(entry)
+            if not (provider.kind == "anthropic" and data.get("has_more") and data.get("last_id")):
+                break
+            params = {"limit": 1000, "after_id": data["last_id"]}
+    return out
 
 
 # -- Ollama model management -----------------------------------------------------

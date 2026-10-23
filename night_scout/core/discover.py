@@ -8,6 +8,8 @@ message; nothing is added unless the input checks out.
 from __future__ import annotations
 
 import contextlib
+import html as html_lib
+import os
 import re
 from collections.abc import Callable
 from html.parser import HTMLParser
@@ -24,6 +26,7 @@ from .config import (
     RedditSource,
     RssKind,
     RssSource,
+    Sources,
     YouTubeSource,
 )
 from .http import PoliteClient, SourceError
@@ -207,6 +210,36 @@ def resolve_youtube(handle_or_url: str, client: PoliteClient) -> tuple[str, str]
 
     The id is checked against the channel's public feed, which also supplies the title.
     """
+    return youtube_feed_title(youtube_channel_id(handle_or_url, client), client)
+
+
+_YT_TITLE = re.compile(r'<meta property="og:title" content="([^"]{1,200})"')
+
+
+def youtube_channel(handle_or_url: str, client: PoliteClient) -> tuple[str, str | None]:
+    """(channel id, the channel page's title or None if no page was opened)."""
+    channel_id, page = _youtube_target(handle_or_url)
+    title: str | None = None
+    if channel_id is None and page is not None:
+        try:
+            html = client.get_public(page).content.decode("utf-8", errors="replace")
+        except SourceError as e:
+            raise ValueError(f"Couldn't open {page} ({e}).") from e
+        for pat in _YT_ID_PATTERNS:
+            m = pat.search(html)
+            if m:
+                channel_id = m.group(1)
+                break
+        if channel_id is None:
+            raise ValueError(f"Couldn't find a channel id on {page}.")
+        t = _YT_TITLE.search(html)
+        title = html_lib.unescape(t.group(1)).strip() if t else None
+    assert channel_id is not None
+    return channel_id, title
+
+
+def youtube_channel_id(handle_or_url: str, client: PoliteClient) -> str:
+    """The channel id for an @handle, channel URL or id (opens the channel page if needed)."""
     channel_id, page = _youtube_target(handle_or_url)
     if channel_id is None and page is not None:
         try:
@@ -221,6 +254,11 @@ def resolve_youtube(handle_or_url: str, client: PoliteClient) -> tuple[str, str]
         if channel_id is None:
             raise ValueError(f"Couldn't find a channel id on {page}.")
     assert channel_id is not None
+    return channel_id
+
+
+def youtube_feed_title(channel_id: str, client: PoliteClient) -> tuple[str, str]:
+    """(channel_id, title) after checking the channel's public feed."""
     try:
         feed = client.get_public(YOUTUBE_FEED + channel_id)
     except SourceError as e:
@@ -311,10 +349,18 @@ def _add_arxiv(cfg: Config, value: str) -> None:
 
 
 def _add_youtube(cfg: Config, value: str, client: PoliteClient) -> None:
-    channel_id, title = resolve_youtube(value, client)
-    for y in cfg.sources.youtube:
+    channel_id, page_title = youtube_channel(value, client)
+    for y in cfg.sources.youtube:  # before the feed check: a duplicate needs no network
         if y.channel_id == channel_id:
             raise ValueError(f"Already following YouTube: {y.name}.")
+    try:
+        channel_id, title = youtube_feed_title(channel_id, client)
+    except ValueError:
+        # YouTube's feed endpoint flaps (404/500 for real channels, Oct 2026). The channel page
+        # opened and named this channel, so it exists: add it; tonight's fetch retries the feed.
+        if not page_title:
+            raise
+        title = page_title
     cfg.sources.youtube.append(
         YouTubeSource(name=" ".join(title.split())[:60], channel_id=channel_id)
     )
@@ -380,7 +426,57 @@ def _add_mastodon(cfg: Config, value: str) -> None:
     cfg.sources.mastodon.append(MastodonSource(instance=instance, hashtags=[tag]))
 
 
-def _add_github(cfg: Config, value: str) -> None:
+def _github_repo(repo: str, http: PoliteClient, token_env: str) -> str:
+    """The repo's real owner/name on GitHub (renamed repos redirect). A repo that doesn't
+    exist is a ValueError; if GitHub can't be asked (rate limit, network) the name is kept."""
+    headers = {"Accept": "application/vnd.github+json"}
+    token = os.environ.get(token_env, "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        data = http.get(f"https://api.github.com/repos/{repo}", headers=headers).json()
+    except SourceError as e:
+        if e.kind == "not-found":
+            name = repo.split("/", 1)[1]
+            hint = _github_guess(name, http, headers)
+            raise ValueError(
+                f"GitHub has no repository {repo!r}."
+                + (
+                    f" Did you mean {hint[0]}? "
+                    f"(most-starred repos named {name!r}: {', '.join(hint)})"
+                    if hint
+                    else " Check the owner and name."
+                )
+            ) from e
+        return repo
+    except ValueError:  # not JSON
+        return repo
+    full = data.get("full_name") if isinstance(data, dict) else None
+    return full if isinstance(full, str) and _GH_REPO.match(full) else repo
+
+
+def _github_guess(name: str, http: PoliteClient, headers: dict[str, str]) -> list[str]:
+    """Up to 3 owner/repo names with exactly this repo name, most stars first ([] if unknown)."""
+    try:
+        data = http.get(
+            "https://api.github.com/search/repositories",
+            params={"q": f"{name} in:name", "sort": "stars", "order": "desc", "per_page": 10},
+            headers=headers,
+        ).json()
+    except (SourceError, ValueError):
+        return []
+    items = data.get("items", []) if isinstance(data, dict) else []
+    exact = [
+        str(i.get("full_name"))
+        for i in items
+        if isinstance(i, dict)
+        and str(i.get("name", "")).lower() == name.lower()
+        and _GH_REPO.match(str(i.get("full_name", "")))
+    ]
+    return exact[:3]
+
+
+def _add_github(cfg: Config, value: str, http: PoliteClient | None = None) -> None:
     v = value.strip()
     m = re.match(r"^(?:https?://)?(?:www\.)?github\.com/([^/\s]+/[^/?#\s]+)", v, re.I)
     gh = cfg.sources.github or GitHubSource()
@@ -388,6 +484,8 @@ def _add_github(cfg: Config, value: str) -> None:
     if m or ("/" in v and " " not in v and ":" not in v):
         if not _GH_REPO.match(repo):
             raise ValueError(f"{v!r} isn't a GitHub owner/repo.")
+        if http is not None:  # make sure it exists, under its current name
+            repo = _github_repo(repo, http, gh.token_env)
         if _has(gh.releases, repo):
             raise ValueError(f"Already following {repo} releases.")
         gh.releases.append(repo)
@@ -399,6 +497,33 @@ def _add_github(cfg: Config, value: str) -> None:
     cfg.sources.github = gh
 
 
+class AlreadyFollowing(ValueError):
+    """The source resolves to one that's already configured (its task `key` and `label`)."""
+
+    def __init__(self, key: str | None, label: str | None, message: str | None = None) -> None:
+        super().__init__(message or "That source is already in the list.")
+        self.key = key
+        self.label = label
+
+
+def _adders(
+    work: Config, value: str, http: PoliteClient, verify: PoliteClient | None = None
+) -> dict[str, Callable[[], None]]:
+    """`verify`: a caller-supplied client for extra existence checks (GitHub repos)."""
+    return {
+        "website": lambda: _add_rss(work, "website", value, http),
+        "newsletter": lambda: _add_rss(work, "newsletter", value, http),
+        "podcast": lambda: _add_rss(work, "podcast", value, http, direct=True),
+        "arxiv": lambda: _add_arxiv(work, value),
+        "youtube": lambda: _add_youtube(work, value, http),
+        "reddit": lambda: _add_reddit(work, value),
+        "hackernews": lambda: _add_hackernews(work, value),
+        "bluesky": lambda: _add_bluesky(work, value),
+        "mastodon": lambda: _add_mastodon(work, value),
+        "github": lambda: _add_github(work, value, verify),
+    }
+
+
 def add_source(cfg: Config, type: str, value: str, client: PoliteClient | None = None) -> str:
     """Validate `value` for source `type`, add it to `cfg` (the caller saves config.yaml)
     and return the new source's label as the Sources page shows it.
@@ -407,8 +532,15 @@ def add_source(cfg: Config, type: str, value: str, client: PoliteClient | None =
     (or a page that links it). arxiv: a category like cs.CL. youtube: @handle or channel
     URL. reddit: a subreddit. hackernews: a keyword. bluesky: @handle or a search.
     mastodon: #tag (mastodon.social) or tag@server. github: owner/repo, else a repo search.
-    Raises ValueError with a message fit to show the user.
+    Raises ValueError with a message fit to show the user (AlreadyFollowing for a duplicate).
     """
+    return add_source_keyed(cfg, type, value, client)[1]
+
+
+def add_source_keyed(
+    cfg: Config, type: str, value: str, client: PoliteClient | None = None
+) -> tuple[str, str]:
+    """`add_source`, returning (task key, label) of the new source."""
     if type == "x":
         raise ValueError(
             "X has no free public API and its terms don't allow scraping, so Night Scout "
@@ -425,26 +557,43 @@ def add_source(cfg: Config, type: str, value: str, client: PoliteClient | None =
     work = cfg.model_copy(deep=True)
     own_client = client is None
     http = client or PoliteClient(contact=cfg.contact)
-    adders: dict[str, Callable[[], None]] = {
-        "website": lambda: _add_rss(work, "website", value, http),
-        "newsletter": lambda: _add_rss(work, "newsletter", value, http),
-        "podcast": lambda: _add_rss(work, "podcast", value, http, direct=True),
-        "arxiv": lambda: _add_arxiv(work, value),
-        "youtube": lambda: _add_youtube(work, value, http),
-        "reddit": lambda: _add_reddit(work, value),
-        "hackernews": lambda: _add_hackernews(work, value),
-        "bluesky": lambda: _add_bluesky(work, value),
-        "mastodon": lambda: _add_mastodon(work, value),
-        "github": lambda: _add_github(work, value),
-    }
+
+    def by_message(msg: str) -> tuple[str | None, str | None]:
+        """The adders' duplicate messages name the source ("Already following YouTube: X.",
+        "... r/sub.", "... that feed as 'Name'."): match that against the configured sources,
+        no network needed. Only an unambiguous match counts."""
+        hits = []
+        for t in configured_tasks(cfg):
+            names = {t.label, t.label.removeprefix("Reddit ")}
+            if any(n and n in msg for n in names):
+                hits.append(t)
+        return (hits[0].key, hits[0].label) if len(hits) == 1 else (None, None)
+
+    def existing() -> tuple[str | None, str | None]:
+        """Which configured source `value` is: resolve it against an empty source list."""
+        probe = cfg.model_copy(deep=True)
+        probe.sources = Sources()
+        try:
+            _adders(probe, value, http)[type]()
+        except (ValueError, SourceError):
+            return None, None
+        found = configured_tasks(probe)
+        return (found[0].key, found[0].label) if found and found[0].key in before else (None, None)
+
     try:
-        adders[type]()
+        try:
+            _adders(work, value, http, client)[type]()
+        except ValueError as e:
+            if str(e).startswith("Already following"):  # the adders' own duplicate check
+                found = by_message(str(e))
+                raise AlreadyFollowing(*(found if found[0] else existing()), message=str(e)) from e
+            raise
+        new = [t for t in configured_tasks(work) if t.key not in before]
+        if not new:
+            raise AlreadyFollowing(*existing())
     finally:
         if own_client:
             http.close()
-    new = [t for t in configured_tasks(work) if t.key not in before]
-    if not new:
-        raise ValueError("That source is already in the list.")
     work.sources.disabled = [k for k in work.sources.disabled if k not in {t.key for t in new}]
     cfg.sources = work.sources
-    return new[0].label
+    return new[0].key, new[0].label

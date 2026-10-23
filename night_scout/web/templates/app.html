@@ -6,17 +6,22 @@
 <meta name="csrf-token" content="{{ csrf }}">
 <title>Night Scout</title>
 <link rel="stylesheet" href="/static/app.css?v={{ v }}">
+<link rel="stylesheet" href="/static/digest.css?v={{ v }}">
 <script src="/static/app.js?v={{ v }}" defer></script>
 <script src="/static/pages.js?v={{ v }}" defer></script>
+<script src="/static/digest.js?v={{ v }}" defer></script>
+<script src="/static/setup.js?v={{ v }}" defer></script>
+<script src="/static/chat.js?v={{ v }}" defer></script>
 </head>
 <body>
 <canvas id="sky" aria-hidden="true"></canvas>
 <div class="dawn" aria-hidden="true"></div>
 
 <header class="top">
-  <a class="brand" href="#/morning"><span class="moon" aria-hidden="true"></span>Night Scout</a>
+  <a class="brand" href="#/digest"><span class="moon" aria-hidden="true"></span>Night Scout</a>
   <nav id="nav">
-    <a href="#/morning" data-page="morning"><span class="ni">☀</span>Morning</a>
+    <a href="#/digest" data-page="digest"><span class="ni">☾</span>Digest</a>
+    <a href="#/actions" data-page="morning"><span class="ni">☀</span>Actions</a>
     <a href="#/projects" data-page="projects"><span class="ni">◫</span>Projects</a>
     <a href="#/sources" data-page="sources"><span class="ni">◉</span>Sources</a>
     <a href="#/guide" data-page="guide"><span class="ni">?</span>Guide</a>
@@ -24,7 +29,8 @@
   </nav>
   <div class="top-right">
     <span class="run-chip" id="runChip"></span>
-    <a class="gear" href="#/settings" data-page="settings" title="Settings: models, providers and API keys"><span class="gi">⚙</span><span>Settings</span></a>
+    <button class="askbtn" id="askNav" type="button" title="Ask Gemma about Night Scout, your setup or anything else" aria-label="Ask Gemma"><img class="scout-ic nav" src="/static/scout.svg" width="22" height="22" alt=""><span>Ask</span></button>
+    <a class="gear" href="#/settings" data-page="settings" title="Settings: models, providers and API keys"><span class="gi"><svg class="gsvg" viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="M9.675 3.616L10.118 0.756A11.4 11.4 0 0 1 13.882 0.756L14.325 3.616A8.7 8.7 0 0 1 16.284 4.428L16.284 4.428L18.62 2.719A11.4 11.4 0 0 1 21.281 5.38L19.572 7.716A8.7 8.7 0 0 1 20.384 9.675L20.384 9.675L23.244 10.118A11.4 11.4 0 0 1 23.244 13.882L20.384 14.325A8.7 8.7 0 0 1 19.572 16.284L19.572 16.284L21.281 18.62A11.4 11.4 0 0 1 18.62 21.281L16.284 19.572A8.7 8.7 0 0 1 14.325 20.384L14.325 20.384L13.882 23.244A11.4 11.4 0 0 1 10.118 23.244L9.675 20.384A8.7 8.7 0 0 1 7.716 19.572L7.716 19.572L5.38 21.281A11.4 11.4 0 0 1 2.719 18.62L4.428 16.284A8.7 8.7 0 0 1 3.616 14.325L3.616 14.325L0.756 13.882A11.4 11.4 0 0 1 0.756 10.118L3.616 9.675A8.7 8.7 0 0 1 4.428 7.716L4.428 7.716L2.719 5.38A11.4 11.4 0 0 1 5.38 2.719L7.716 4.428A8.7 8.7 0 0 1 9.675 3.616ZM8.4 12A3.6 3.6 0 1 0 15.6 12A3.6 3.6 0 1 0 8.4 12Z"/></svg></span><span>Settings</span></a>
     <span class="model-chip" id="modelChip" title="All judging happens on this machine"><span class="dot"></span><span id="modelName"></span> · <span id="modelWhere">local</span></span>
   </div>
 </header>
@@ -32,6 +38,7 @@
 <main id="app"></main>
 
 <footer class="status" id="status"></footer>
+<a class="madeby" href="https://snippbot.com" target="_blank" rel="noopener noreferrer" title="snippbot.com">Developed by <img src="/static/snippbot-48.png" alt="" width="18" height="18"><b>Snippbot</b></a>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 </body>
 </html>

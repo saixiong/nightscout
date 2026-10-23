@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
+from datetime import time as dtime
 from pathlib import Path
 
 from .db import Store
@@ -126,3 +127,41 @@ def write_digest(
     )
     store.save_digest(day.isoformat(), run_id, str(path), [r["id"] for r in picks])
     return path
+
+
+# -- the Digest (by topic) -------------------------------------------------------------------
+def day_window(day: date) -> tuple[str, str]:
+    """[local midnight, next local midnight) of `day`, as UTC ISO strings like the DB stores."""
+    start = datetime.combine(day, dtime.min).astimezone()
+    return start.astimezone(UTC).isoformat(), (start + timedelta(days=1)).astimezone(
+        UTC
+    ).isoformat()
+
+
+def split_digest(
+    rows: list[sqlite3.Row],
+    topics: list[str],
+    weights: Weights,
+    bar: float,
+    size: int,
+    hidden: set[int] | None = None,
+) -> tuple[list[sqlite3.Row], list[sqlite3.Row]]:
+    """(stories, everything else). Stories: Gemma filed them under one of your topics at or above
+    the bar, best first, at most `size`. The rest: every other item, most similar first. Items you
+    hid ("Not for me" or ✕) and muted sources are left out of both."""
+    want = {t.casefold() for t in topics}
+    gone = weights.ignored_items | (hidden or set())
+    keep = [r for r in rows if r["id"] not in gone and not weights.muted(r["source_name"])]
+    stories = [
+        r
+        for r in keep
+        if r["digest_topic"]
+        and r["digest_topic"].casefold() in want
+        and (r["digest_relevance"] or 0.0) >= bar
+    ]
+    stories.sort(key=lambda r: (-(r["digest_relevance"] or 0.0), -(r["prefilter"] or 0.0), r["id"]))
+    stories = stories[:size]
+    chosen = {r["id"] for r in stories}
+    rest = [r for r in keep if r["id"] not in chosen]
+    rest.sort(key=lambda r: (-(r["prefilter"] or 0.0), r["id"]))
+    return stories, rest

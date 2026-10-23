@@ -27,7 +27,7 @@ class ModelConfig(BaseModel):
 
 
 DEFAULT_PROVIDER = "ollama"
-ProviderKind = Literal["ollama", "openai_compatible"]
+ProviderKind = Literal["ollama", "openai_compatible", "anthropic"]
 RoleName = Literal["judge", "fallback", "chat", "embed"]
 ROLE_NAMES: tuple[RoleName, ...] = ("judge", "fallback", "chat", "embed")
 
@@ -70,7 +70,7 @@ class ProviderConfig(BaseModel):
     name: str = ""
     base_url: str
     api_key_env: str | None = None
-    # Models to offer for roles. Ollama lists its own; OpenAI-compatible servers are told.
+    # Models to offer for roles. Ollama lists its own; the others are told (Settings → Models ▾).
     models: list[str] = Field(default_factory=list)
 
     @field_validator("id")
@@ -141,6 +141,9 @@ class Thresholds(BaseModel):
     near_duplicate: float = Field(default=0.92, ge=0.5, le=1.0)
     # New side-project ideas proposed after each run's digest (0 turns them off).
     ideas: int = Field(default=2, ge=0, le=5)
+    # the Digest (by topic): Gemma's topic score needed to make it, and the most it shows
+    digest_bar: float = Field(default=0.8, ge=0.0, le=1.0)
+    digest_max: int = Field(default=25, ge=1, le=100)
 
 
 class ProjectRef(BaseModel):
@@ -213,6 +216,56 @@ class GitHubSource(BaseModel):
     token_env: str = "GITHUB_TOKEN"
 
 
+MAX_SCOUT_TERMS = 10
+MAX_TERM_LEN = 60
+LOOK_BACK_MAX = 14
+
+
+def clean_scout_terms(raw: object) -> list[str]:
+    """Key terms from a list or a comma-separated string: trimmed, de-duplicated (any case),
+    at most MAX_SCOUT_TERMS. Raises ValueError with a message fit to show the user."""
+    if raw is None:
+        return []
+    parts = raw.split(",") if isinstance(raw, str) else list(raw)  # type: ignore[call-overload]
+    out: list[str] = []
+    seen: set[str] = set()
+    for p in parts:
+        if not isinstance(p, str):
+            raise ValueError("Key terms must be text.")
+        t = " ".join(p.split())
+        if not t:
+            continue
+        if len(t) > MAX_TERM_LEN:
+            raise ValueError(f"A key term can be at most {MAX_TERM_LEN} characters.")
+        if any(ord(ch) < 32 for ch in t):
+            raise ValueError("Key terms can't contain control characters.")
+        if t.casefold() not in seen:
+            seen.add(t.casefold())
+            out.append(t)
+    if len(out) > MAX_SCOUT_TERMS:
+        raise ValueError(f"Use at most {MAX_SCOUT_TERMS} key terms per source.")
+    return out
+
+
+class ScoutSettings(BaseModel):
+    """Per-source settings, keyed in `Sources.scout` by the source's task key
+    (youtube:<channel id>, rss:<feed url>, reddit:<subreddit>)."""
+
+    # How many days back the first fetch reads (and how far a run catches up). None = default.
+    look_back_days: int | None = Field(default=None, ge=1, le=LOOK_BACK_MAX)
+    # New items that mention a term (whole word, any case) go first in Gemma's queue.
+    terms: list[str] = Field(default_factory=list)
+
+    @field_validator("terms", mode="before")
+    @classmethod
+    def _terms(cls, v: object) -> list[str]:
+        return clean_scout_terms(v)
+
+
+# Source types that take ScoutSettings (feed-style sources; searches have their own keywords).
+SCOUTABLE_TYPES = ("youtube", "rss", "reddit")
+
+
 class Sources(BaseModel):
     youtube: list[YouTubeSource] = Field(default_factory=list)
     rss: list[RssSource] = Field(default_factory=list)
@@ -223,6 +276,11 @@ class Sources(BaseModel):
     github: GitHubSource | None = None
     # SourceTask keys (see `night-scout sources` / the Sources page) that are switched off.
     disabled: list[str] = Field(default_factory=list)
+    # Look back + Scout key terms per source, keyed like `disabled`.
+    scout: dict[str, ScoutSettings] = Field(default_factory=dict)
+
+    def scout_for(self, key: str) -> ScoutSettings | None:
+        return self.scout.get(key)
 
 
 class Schedule(BaseModel):
@@ -248,6 +306,35 @@ class SandboxConfig(BaseModel):
     allow_unfenced_venv: bool = False
 
 
+SearchProvider = Literal["none", "searxng", "brave"]
+
+
+def check_searxng_url(url: str) -> str:
+    """http(s) with a host; no credentials, query or fragment. Plain http is fine: SearXNG
+    is often self-hosted on the LAN, and no key travels with the request."""
+    url = url.strip().rstrip("/")
+    parts = urlsplit(url)
+    if len(url) > 300 or parts.scheme not in ("http", "https") or not parts.hostname:
+        raise ValueError("The SearXNG URL must be an http:// or https:// address")
+    if parts.username or parts.password:
+        raise ValueError("The SearXNG URL must not contain a user name or password")
+    if parts.query or parts.fragment:
+        raise ValueError("The SearXNG URL must not have a query string or fragment")
+    return url
+
+
+class SearchConfig(BaseModel):
+    """Web search for the chat drawer. The Brave key lives in the keychain (id brave-search)."""
+
+    provider: SearchProvider = "none"
+    searxng_url: str | None = None
+
+    @field_validator("searxng_url")
+    @classmethod
+    def _searxng(cls, v: str | None) -> str | None:
+        return check_searxng_url(v) if v else None
+
+
 class Config(BaseModel):
     model: ModelConfig = Field(default_factory=ModelConfig)
     # Optional. Without them everything runs on Ollama exactly as `model:` describes.
@@ -258,6 +345,8 @@ class Config(BaseModel):
     sources: Sources = Field(default_factory=Sources)
     schedule: Schedule = Field(default_factory=Schedule)
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
+    # Web search for the chat drawer (Settings → Chat & search).
+    search: SearchConfig = Field(default_factory=SearchConfig)
     # Shown to sources in the User-Agent so they can reach you; keep it generic if you like.
     contact: str = "local user"
     data_dir: str | None = None

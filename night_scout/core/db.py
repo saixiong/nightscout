@@ -127,14 +127,25 @@ CREATE TABLE IF NOT EXISTS digests (
 
 # Columns added after the first release. Old databases get them on open; old rows stay NULL.
 MIGRATIONS: dict[str, list[tuple[str, str]]] = {
-    "scores": [("impact", "TEXT"), ("matched", "TEXT"), ("next_step", "TEXT")],
+    "scores": [
+        ("impact", "TEXT"),
+        ("matched", "TEXT"),
+        ("next_step", "TEXT"),
+        # the Digest (Oct 22): topic filing, key points, a headline for weak titles
+        ("digest_topic", "TEXT"),
+        ("digest_relevance", "REAL"),
+        ("headline", "TEXT"),
+        ("outline", "TEXT"),
+    ],
+    "items": [("saved_at", "TEXT")],
 }
 
 IDEA_STATUSES = ("new", "dismissed", "started")
 
 _SCORED_COLS = (
     "s.summary, s.best_project, s.best_score, s.per_project, s.topics, "
-    "s.impact, s.matched, s.next_step, s.model AS score_model"
+    "s.impact, s.matched, s.next_step, s.model AS score_model, "
+    "s.digest_topic, s.digest_relevance, s.headline, s.outline"
 )
 
 
@@ -149,6 +160,16 @@ def migrate(conn: sqlite3.Connection) -> list[str]:
                 added.append(f"{table}.{name}")
     conn.commit()
     return added
+
+
+def _local_day(iso: str | None) -> str | None:
+    """The local calendar day (YYYY-MM-DD) of a stored UTC timestamp."""
+    if not iso:
+        return None
+    try:
+        return datetime.fromisoformat(iso).astimezone().date().isoformat()
+    except ValueError:
+        return None
 
 
 def _iso(dt: datetime | None) -> str | None:
@@ -378,6 +399,10 @@ class Store:
         extra.update(updates)
         self.set_item_fields(item_id, extra=json.dumps(extra))
 
+    def requeue_item(self, item_id: int) -> None:
+        """Put a seen-but-unjudged item back in the queue for the next run (Scout key terms)."""
+        self.set_item_fields(item_id, status="new", first_seen=_iso(utcnow()))
+
     def count_items(self) -> int:
         return int(self.conn.execute("SELECT COUNT(*) FROM items").fetchone()[0])
 
@@ -392,13 +417,18 @@ class Store:
         impact: str | None = None,
         matched: list[str] | None = None,
         next_step: str | None = None,
+        digest_topic: str | None = None,
+        digest_relevance: float | None = None,
+        headline: str | None = None,
+        outline: list[str] | None = None,
     ) -> None:
         best = max(per_project, key=lambda p: p["relevance"], default=None)
         with self.tx() as c:
             c.execute(
                 "INSERT OR REPLACE INTO scores(item_id,model,summary,best_project,best_score,"
-                "per_project,topics,scored_at,impact,matched,next_step) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                "per_project,topics,scored_at,impact,matched,next_step,"
+                "digest_topic,digest_relevance,headline,outline) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     item_id,
                     model,
@@ -411,6 +441,10 @@ class Store:
                     impact,
                     json.dumps(matched) if matched is not None else None,
                     next_step,
+                    digest_topic,
+                    digest_relevance,
+                    headline,
+                    json.dumps(outline) if outline is not None else None,
                 ),
             )
             c.execute("UPDATE items SET status='scored' WHERE id=?", (item_id,))
@@ -425,6 +459,44 @@ class Store:
             "WHERE s.scored_at>=? ORDER BY s.best_score DESC, i.id",
             (iso,),
         ).fetchall()
+
+    def items_between(self, start_iso: str, end_iso: str) -> list[sqlite3.Row]:
+        """Every non-duplicate item first seen in [start, end), with its score if judged."""
+        return self.conn.execute(
+            f"SELECT i.*, {_SCORED_COLS} FROM items i LEFT JOIN scores s ON s.item_id=i.id "
+            "WHERE i.first_seen>=? AND i.first_seen<? AND i.status!='duplicate' "
+            "ORDER BY i.id",
+            (start_iso, end_iso),
+        ).fetchall()
+
+    def saved_items(self, limit: int = 200) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            f"SELECT i.*, {_SCORED_COLS} FROM items i LEFT JOIN scores s ON s.item_id=i.id "
+            "WHERE i.saved_at IS NOT NULL ORDER BY i.saved_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+
+    def set_saved(self, item_id: int, saved: bool) -> None:
+        with self.tx() as c:
+            c.execute(
+                "UPDATE items SET saved_at=? WHERE id=?",
+                (_iso(utcnow()) if saved else None, item_id),
+            )
+
+    def first_seen_days(self, limit: int = 14) -> list[str]:
+        """Local calendar days that have fetched items, newest first (the Digest's day list)."""
+        rows = self.conn.execute(
+            "SELECT DISTINCT first_seen FROM items WHERE status!='duplicate' "
+            "ORDER BY first_seen DESC LIMIT 20000"
+        ).fetchall()
+        days: list[str] = []
+        for r in rows:
+            d = _local_day(r["first_seen"])
+            if d and d not in days:
+                days.append(d)
+                if len(days) >= limit:
+                    break
+        return days
 
     def scored_for_run(self, run_id: int) -> list[sqlite3.Row]:
         return self.conn.execute(

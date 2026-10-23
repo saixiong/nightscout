@@ -48,6 +48,15 @@ class RunResult:
     stats: dict[str, int] = field(default_factory=dict)
 
 
+def scout_first(ranked: list[Any], pending: list[sqlite3.Row]) -> tuple[list[Any], int]:
+    """Scout key terms: items that mention a source's terms go to the front of the queue,
+    keeping the pre-filter's order within each group. Returns (ranked, how many matched)."""
+    scouted = {r["id"] for r in pending if json.loads(r["extra"] or "{}").get("scout_terms")}
+    if not scouted:
+        return ranked, 0
+    return sorted(ranked, key=lambda c: c.item_id not in scouted), len(scouted)
+
+
 def run_once(
     cfg: Config,
     fetch_only: bool = False,
@@ -148,8 +157,16 @@ def _judge_and_digest(
         _status(store, run_id, result, "pipeline:profile", "Profile", False, str(e))
         result.ok = False
         return
-    if not profile.projects:
-        _status(store, run_id, result, "pipeline:profile", "Profile", False, "no projects")
+    if profile.empty:
+        _status(
+            store,
+            run_id,
+            result,
+            "pipeline:profile",
+            "Profile",
+            False,
+            "nothing to scout for: add a topic or a project (Settings → Setup)",
+        )
         result.ok = False
         return
 
@@ -223,6 +240,9 @@ def _judge_and_digest(
     progress("dedupe", len(pending), len(pending))
     progress("prefilter", 0, len(pending))
     ranked = rank_candidates(pending, profile, weights, item_vecs, query_vecs)
+    ranked, scouted = scout_first(ranked, pending)
+    if scouted:
+        result.stats["scouted"] = scouted
     chosen = ranked[: cfg.thresholds.max_scored]
     chosen_ids = {c.item_id for c in chosen}
     for c in ranked:
@@ -282,23 +302,29 @@ def _judge_and_digest(
             judged.summary,
             judged.per_project,
             judged.topics,
-            impact=judged.impact,
-            matched=judged.matched,
-            next_step=judged.next_step,
+            impact=judged.impact if profile.projects else None,
+            matched=judged.matched if profile.projects else None,
+            next_step=judged.next_step if profile.projects else None,
+            digest_topic=judged.digest_topic,
+            digest_relevance=judged.digest_relevance if judged.digest_topic else None,
+            headline=judged.headline,
+            outline=judged.outline,
         )
         store.update_extra(row["id"], kind=judged.kind)
         scored += 1
         best = judged.best or {}
         relevance = judged.best_relevance
         log.info(
-            "[%d/%d] %.2f %s :: %s",
+            "[%d/%d] %.2f %s · digest %.2f %s :: %s",
             i,
             len(chosen),
             relevance,
             best.get("project"),
+            judged.digest_relevance,
+            judged.digest_topic,
             row["title"][:80],
         )
-        if relevance >= cfg.thresholds.relevance:
+        if profile.projects and relevance >= cfg.thresholds.relevance:
             worth_actions.append((row, judged, transcript))
     if lost_model is None:
         progress("judge", len(chosen), len(chosen))
@@ -381,7 +407,12 @@ def _judge_and_digest(
     result.stats["digest_items"] = len(picks)
     progress("digest", 1, 1)
 
-    if cfg.thresholds.ideas > 0 and lost_model is None:
+    result.stats["digest_stories"] = sum(
+        1
+        for r in scored_today
+        if r["digest_topic"] and (r["digest_relevance"] or 0) >= cfg.thresholds.digest_bar
+    )
+    if cfg.thresholds.ideas > 0 and lost_model is None and profile.projects:
         _ideas(cfg, store, llm, profile, run_id, result, day, scored_today, weights, progress)
 
 

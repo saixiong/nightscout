@@ -22,6 +22,7 @@ dependencies = [
   "youtube-transcript-api>=1.0",
   "markdown-it-py>=3.0",
   "keyring>=25",
+  "pypdf>=4",
 ]
 
 [project.urls]
@@ -30,6 +31,8 @@ Issues = "https://github.com/saixiong/nightscout/issues"
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.5", "mypy>=1.10", "types-PyYAML"]
+# Whole-channel search for Scout key terms without a YouTube Data API key
+youtube = ["yt-dlp>=2026.8.19"]
 
 [project.scripts]
 night-scout = "night_scout.cli:main"

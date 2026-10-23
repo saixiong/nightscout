@@ -1,29 +1,40 @@
 # Night Scout
 
-**An overnight scout that turns the internet into next steps for your own projects.**
+**An overnight scout that turns the internet into a short morning Digest, and into next steps
+for your own projects.**
 
 Before bed you do nothing. Overnight, Night Scout reads the feeds you'd otherwise
 doom-scroll: YouTube channels, blogs, Hacker News, Reddit, Bluesky, Mastodon and GitHub
-releases. A local Gemma model, running through Ollama, judges what matters **to the
-projects on your disk**. In the morning you get a short list of things worth doing, each
-with a typed next step: *Try it* in a sandbox, *Research more*, *Note for project*,
-*Watch later*.
+releases. A local Gemma model, running through Ollama, files what matters under **the topics
+you follow**, and, if you point it at the projects on your disk, judges what matters **to
+those projects**. In the morning you get two pages:
 
-It's not another feed of summaries. Most mornings it should be three to seven cards long,
-and some mornings it should say "nothing cleared the bar".
+- **Digest** (opens first): the night's best stories for your topics, 25 at most, each with a
+  plain summary, the key points and the video right in the card. Everything else from the
+  night is one click below, ranked by similarity, so nothing is hidden. No projects needed.
+- **Actions** (with projects): a short list of things worth doing, each labelled Issue,
+  Change, Improvement or Relevant with a typed next step: *Try it* in a sandbox, *Research
+  more*, *Note for project*, *Watch later*. Most mornings it's three to seven cards; some
+  mornings it says "nothing cleared the bar".
 
 ![Night Scout morning view](docs/screenshot-morning.png)
 
-- **Project-aware.** It reads your READMEs and dependency files and builds a small,
-  editable profile of what each project cares about.
+- **Your topics, your words.** Type the topics you follow (in Setup or on the Digest). Gemma
+  files each item under one of them with a strict 0–100 % score; only 80 % and up make the
+  Digest. Weak titles (a list of names, a wall of hashtags, another language) get a short
+  Gemma headline, with the original underneath.
+- **Project-aware, optionally.** Point it at project folders and it reads their READMEs and
+  dependency files into a small, editable profile of what each project cares about.
 - **Action-first.** Every pick is labelled for the project it fits (Issue, Change,
   Improvement or Relevant), shows the profile entry it matched and why, and comes with a
   next step plus one to three concrete actions. Gemma also suggests two small new project
   ideas each night.
-- **Your models.** Ollama by default; LM Studio, any OpenAI-compatible server, OpenAI or
-  OpenRouter if you want (Settings → AI Providers). API keys live in the OS keychain.
+- **Your models.** Ollama by default; LM Studio, any OpenAI-compatible server, or a cloud
+  provider (Anthropic, Google Gemini, OpenAI, OpenRouter, DeepSeek, Groq, Mistral, xAI) for
+  the roles you pick (Settings → AI Providers). API keys live in the OS keychain.
 - **Local and free.** Open weights on your own machine: your project context never leaves
-  the laptop, each run costs $0, and it can run every night forever.
+  the laptop, each run costs $0 unless you pick a cloud model for a role, and it can run
+  every night forever.
 - **Nothing runs on its own.** The nightly run only proposes. Try-it plans run in a
   throwaway sandbox, and only after you read the exact commands and confirm.
 
@@ -43,10 +54,11 @@ git clone https://github.com/saixiong/nightscout && cd nightscout
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e .
 
-# 3. Point it at your projects, run once, open the morning view
-night-scout init ~/code/project-a ~/code/project-b
+# 3. Set it up in the browser: model, topics (and projects if you like), sources, schedule
+night-scout setup        # opens http://127.0.0.1:8765 on the setup walkthrough
+#    or from the terminal: night-scout init ~/code/project-a ~/code/project-b
 night-scout run          # first run: ~10-15 min on an M-series Mac
-night-scout serve        # opens http://127.0.0.1:8765
+night-scout serve        # the Digest, Actions and everything else
 
 # 4. Make it nightly
 night-scout schedule             # shows what will be installed
@@ -76,6 +88,12 @@ fetch ─► dedupe ─► pre-filter ─► Gemma judges ─► Gemma proposes 
    subreddit RSS, the Bluesky public AppView, Mastodon hashtag timelines, and GitHub releases
    and repo search. Requests are spaced per host and use a descriptive User-Agent. A
    source that fails is reported ("Reddit r/x: HTTP 429, skipped") and the run goes on.
+   Each feed-style source has a **look back** (1–14 days, default 3) and optional **Scout key
+   terms**: new items that mention one go to the front of Gemma's queue. When a source with
+   terms is added, its feed is checked once at any age; a YouTube channel is searched as a
+   whole (YouTube Data API with your key, or [yt-dlp](https://github.com/yt-dlp/yt-dlp) without
+   one; that's the one place Night Scout reads public web pages instead of a feed, and only
+   when you ask for it).
 2. **Dedupe** by canonical URL (tracking parameters stripped, YouTube URL forms folded)
    and by embedding similarity. Something seen on HN *and* Reddit counts as one item with
    a little extra buzz.
@@ -130,7 +148,64 @@ doesn't make a package trustworthy.
 
 Your profile, the database, digests and votes live in `~/.night-scout/` (or
 `$NIGHT_SCOUT_HOME`). The only network traffic is the fetches to public sources (and, if you
-click Research more, to that item's page). Model calls go to Ollama on localhost.
+click Research more, to that item's page). Model calls go to Ollama on localhost unless you
+pick a cloud model for a role.
+
+Cloud providers are optional and used only for the roles you give them (Settings → AI
+Providers marks those roles "Leaves this machine"; calls bill to your account with that
+provider). Embeddings always stay local. API keys live only in the OS keychain (macOS
+Keychain, Windows Credential Manager, Linux Secret Service), never in `config.yaml`, the
+database, the logs or the Try-it sandbox; the app shows them only as the first and last four
+characters, and an environment variable such as `ANTHROPIC_API_KEY` or `GEMINI_API_KEY`
+overrides a stored key.
+
+## Ask Gemma (the chat drawer)
+
+**✦ Ask** opens a drawer where Gemma answers questions about a day's Digest or one story.
+It doesn't guess from memory: it calls research tools and shows each call as it happens
+(click a call to see what came back), then answers with links to the pages it used.
+
+| Tool | What it does |
+|---|---|
+| Tonight's items | Searches every item fetched that night: titles, headlines, topics, summaries |
+| Read a page | Fetches one public web page and keeps the readable text |
+| YouTube transcript | The English transcript of a video |
+| Hacker News | Stories, points and comment counts from HN search |
+| Web search | Optional: your SearXNG instance or the Brave Search API |
+
+The chat uses the `chat` model role, which follows the Judge model unless you pick another
+in Settings → AI Providers → Model roles → Chat (or set `roles.chat` in `config.yaml`). With a
+cloud chat model, your questions, their context and the tools' results go to that provider.
+Conversations are kept in `scout.db`.
+
+Safety: text from pages, transcripts and search results is data, never instructions (the
+prompt says so, and tool output is passed back as tool results). One answer gets at most
+five tool calls. Read a page only fetches public http(s) addresses, checked on every
+redirect and pinned to the checked IP, with time, size and content-type limits; it can't
+reach this computer or your network. Tools run from your machine; with a local model,
+nothing but those fetches leaves it.
+
+### Web search (optional)
+
+Off by default; then Gemma isn't offered the tool at all. Pick a provider in
+**Settings → Chat & search** and press **Test**.
+
+- **SearXNG** (no key): run your own instance, e.g.
+  `docker run -d -p 8888:8080 -v "$PWD/searxng:/etc/searxng" searxng/searxng`, then enable
+  JSON output in `searxng/settings.yml` (under `search:`, set `formats: [html, json]`) and
+  restart it. Enter `http://127.0.0.1:8888` in Settings. Without JSON output SearXNG answers
+  403 and the Test button says how to fix it.
+- **Brave Search API**: get a key at [brave.com/search/api](https://brave.com/search/api/)
+  (there's a free tier) and paste it in Settings. It's stored in the OS keychain under
+  `brave-search`, shown only masked, and never written to `config.yaml`.
+
+Either way, only Gemma's search words go to the provider. In `config.yaml`:
+
+```yaml
+search:
+  provider: searxng        # none | searxng | brave
+  searxng_url: http://127.0.0.1:8888
+```
 
 ## Configuration
 
@@ -159,8 +234,9 @@ schedule:
   time: "04:30"
 ```
 
-`profile.yaml` is yours to edit. `night-scout profile` regenerates it from your projects
-(and overwrites your edits).
+`profile.yaml` is yours to edit. The top-level `topics:` list drives the Digest; the
+`projects:` entries drive Actions. `night-scout profile` regenerates the project entries from
+your folders (overwriting your edits to them) and keeps your topics.
 
 ## How it compares
 
