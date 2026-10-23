@@ -149,7 +149,8 @@ doesn't make a package trustworthy.
 Your profile, the database, digests and votes live in `~/.night-scout/` (or
 `$NIGHT_SCOUT_HOME`). The only network traffic is the fetches to public sources (and, if you
 click Research more, to that item's page). Model calls go to Ollama on localhost unless you
-pick a cloud model for a role.
+pick a cloud model for a role. The optional voice add-on downloads its speech model and each
+voice from Hugging Face once; recordings are made and kept on your machine.
 
 Cloud providers are optional and used only for the roles you give them (Settings → AI
 Providers marks those roles "Leaves this machine"; calls bill to your account with that
@@ -205,6 +206,33 @@ Either way, only Gemma's search words go to the provider. In `config.yaml`:
 search:
   provider: searxng        # none | searxng | brave
   searxng_url: http://127.0.0.1:8888
+```
+
+## Listen to your Digest (optional)
+
+```sh
+pip install "night-scout[voice]"     # about 1.1 GB with PyTorch; restart Night Scout after
+```
+
+With the add-on, the Digest gets a **▶ Listen** button (and one on each story) that reads it
+aloud: each headline, where it's from, and Gemma's summary, topic by topic. A player docks on
+the page and keeps playing while you move around the app. The voice is
+[Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M), an open-weight speech model that runs
+on your machine; the text never leaves it. Its model (about 330 MB) and each voice download
+from Hugging Face the first time they're used, then it works offline.
+
+**Settings → Voice** picks one of 28 English voices (Heart by default, each with a preview),
+the speed, and headlines only or headlines and summaries. **Ready by morning** (on by default)
+records the night's Digest right after the nightly run, so Listen plays at once; recordings
+are kept 7 days. Without the add-on nothing changes. To record with a Python that has Kokoro
+installed elsewhere, set `NIGHT_SCOUT_TTS_PYTHON` to it. In `config.yaml`:
+
+```yaml
+voice:
+  voice: af_heart          # one of Kokoro's English voices
+  speed: 1.0               # 0.9, 1.0, 1.25 or 1.5
+  reads: full              # full | headlines
+  ready_by_morning: true
 ```
 
 ## Configuration
