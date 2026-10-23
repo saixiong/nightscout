@@ -21,15 +21,15 @@ from typing import Any
 PRONOUNCE: dict[str, str] = {
     "Qwen": "[Qwen](/kwˈɛn/)",
     "Ollama": "[Ollama](/ˈOlˌɑmə/)",
-    # misaki already says /hˈɜɹmiz/, which comes out as "Hermey's"; a secondary stress on
-    # the second syllable is the closest Kokoro gets to "HER-meez".
-    "Hermes": "[Hermes](/hˈɜɹmˌiz/)",
+    # misaki says /hˈɜɹmiz/, which comes out as "Hermey's" (faster-whisper hears that too);
+    # a full second syllable, "HER-mees", is heard as "Hermes".
+    "Hermes": "[Hermes](/hˈɜɹmˌis/)",
     "LocalLLaMA": "Local Llama",
     "LLaMA": "Llama",
     "vLLM": "V L L M",
     "SGLang": "S G Lang",
     "NVFP4": "N V F P 4",
-    "LLMs": "L L Ms",
+    "LLMs": "[LLMs](/ˌɛlˌɛlˈɛmz/)",  # "L L Ms" is read "L L M S"
     "LLM": "L L M",
     "MoE": "M O E",
     "MOE": "M O E",

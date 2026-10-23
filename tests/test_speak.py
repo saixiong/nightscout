@@ -52,9 +52,9 @@ from night_scout.core.speak import script, sentence, speakable, story_order
         ("Qwen3 and qwen", "[Qwen](/kwˈɛn/) 3 and [Qwen](/kwˈɛn/)"),
         ("Ollama 0.12", "[Ollama](/ˈOlˌɑmə/) 0.12"),
         ("vLLM and SGLang", "V L L M and S G Lang"),
-        ("LLMs beat an LLM", "L L Ms beat an L L M"),
+        ("LLMs beat an LLM", "[LLMs](/ˌɛlˌɛlˈɛmz/) beat an L L M"),
         ("at NVFP4 in GGUF", "at N V F P 4 in G G U F"),
-        ("Hermes 4 is out", "[Hermes](/hˈɜɹmˌiz/) 4 is out"),
+        ("Hermes 4 is out", "[Hermes](/hˈɜɹmˌis/) 4 is out"),
         ("MOE model", "M O E model"),
         ("C# and F#", "C sharp and F sharp"),
         ("AT&T", "AT and T"),
@@ -118,7 +118,7 @@ def test_script_intro_stories_outro() -> None:
         "Night Scout. Your Digest for Thursday, October 22. 4 stories, across 3 topics."
     )
     # the topic is said at the start of its first story only
-    assert ch[1].text == "Local L L Ms. Title 2. From the Local Llama subreddit."
+    assert ch[1].text == "Local [LLMs](/ˌɛlˌɛlˈɛmz/). Title 2. From the Local Llama subreddit."
     assert ch[2].text == "Headline 3. From llm on Mastodon. Summary 3."
     assert (
         ch[3].text
