@@ -208,7 +208,7 @@ def test_schedule_put_installs_and_removes(env, tmp_path: Path, monkeypatch) -> 
 def test_run_now(env, monkeypatch) -> None:  # noqa: F811
     client, *_ = env
     started: list[int] = []
-    monkeypatch.setattr(web.setup_mod, "start_run", lambda _c, _p: started.append(1) or 99)
+    monkeypatch.setattr(web.setup_mod, "start_run", lambda _c, _p, **_k: started.append(1) or 99)
     r = client.post("/api/run", json={})
     assert r.status_code == 200 and r.json()["pid"] == 99 and started == [1]
 
@@ -218,7 +218,7 @@ def test_run_now_needs_a_profile(tmp_path: Path, monkeypatch) -> None:
     cfg.data_path().mkdir(parents=True)
     config_path = tmp_path / "config.yaml"
     save_config(cfg, config_path)
-    monkeypatch.setattr(web.setup_mod, "start_run", lambda _c, _p: pytest.fail("ran"))
+    monkeypatch.setattr(web.setup_mod, "start_run", lambda _c, _p, **_k: pytest.fail("ran"))
     client = TestClient(create_app(cfg, config_path, session_key="k"), base_url=BASE)
     page = client.get("/?key=k")
     client.headers["X-CSRF-Token"] = page.text.split('csrf-token" content="', 1)[1].split('"')[0]
@@ -235,7 +235,7 @@ def test_run_now_with_topics_and_no_projects(tmp_path: Path, monkeypatch) -> Non
     save_config(cfg, config_path)
     save_topics(cfg.profile_file(), ["Local LLMs"])
     started: list[int] = []
-    monkeypatch.setattr(web.setup_mod, "start_run", lambda _c, _p: started.append(1) or 7)
+    monkeypatch.setattr(web.setup_mod, "start_run", lambda _c, _p, **_k: started.append(1) or 7)
     client = TestClient(create_app(cfg, config_path, session_key="k"), base_url=BASE)
     page = client.get("/?key=k")
     client.headers["X-CSRF-Token"] = page.text.split('csrf-token" content="', 1)[1].split('"')[0]

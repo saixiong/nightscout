@@ -230,17 +230,19 @@ def setup_status(cfg: Config) -> dict[str, Any]:
 
 
 # -- run now ------------------------------------------------------------------------------
-def start_run(cfg: Config, config_path: Path) -> int:
+def start_run(cfg: Config, config_path: Path, digest_only: bool = False) -> int:
     """Start one `night-scout run` in the background, detached from the web server.
 
     Same command the nightly schedule uses; output goes to <data>/logs/run.log. The run's
-    own lock makes a second concurrent run exit straight away.
+    own lock makes a second concurrent run exit straight away. `digest_only` adds
+    --digest-only (Run now → Digest only).
     """
+    cmd = run_command(config_path) + (["--digest-only"] if digest_only else [])
     logs = cfg.data_path() / "logs"
     logs.mkdir(parents=True, exist_ok=True)
     with open(logs / "run.log", "ab") as out:
         proc = subprocess.Popen(
-            run_command(config_path),
+            cmd,
             stdin=subprocess.DEVNULL,
             stdout=out,
             stderr=subprocess.STDOUT,

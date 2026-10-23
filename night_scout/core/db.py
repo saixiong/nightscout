@@ -225,10 +225,18 @@ class Store:
             return cur.rowcount
 
     # -- runs ---------------------------------------------------------------
-    def start_run(self) -> int:
+    def start_run(self, mode: str | None = None) -> int:
+        """A new run. `mode` ("all" / "digest") is in its stats from the start, so the UI can
+        say what kind of run is going."""
+        stats = json.dumps({"mode": mode} if mode else {})
         with self.tx() as c:
-            cur = c.execute("INSERT INTO runs(started_at) VALUES (?)", (_iso(utcnow()),))
+            cur = c.execute(
+                "INSERT INTO runs(started_at, stats) VALUES (?, ?)", (_iso(utcnow()), stats)
+            )
             return int(cur.lastrowid or 0)
+
+    def recent_runs(self, limit: int = 20) -> list[sqlite3.Row]:
+        return self.conn.execute("SELECT * FROM runs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
 
     def finish_run(self, run_id: int, status: str, stats: dict[str, Any]) -> None:
         stats = dict(stats)
@@ -245,6 +253,13 @@ class Store:
                 "updated_at": _iso(utcnow()),
             }
         with self.tx() as c:
+            row = c.execute("SELECT stats FROM runs WHERE id=?", (run_id,)).fetchone()
+            try:
+                mode = json.loads(row["stats"] or "{}").get("mode") if row else None
+            except (TypeError, ValueError, AttributeError):
+                mode = None
+            if mode and "mode" not in stats:  # set by start_run; the run's own stats lack it
+                stats["mode"] = mode
             c.execute(
                 "UPDATE runs SET finished_at=?, status=?, stats=? WHERE id=?",
                 (_iso(utcnow()), status, json.dumps(stats), run_id),
@@ -451,6 +466,17 @@ class Store:
 
     def score(self, item_id: int) -> sqlite3.Row | None:
         return self.conn.execute("SELECT * FROM scores WHERE item_id=?", (item_id,)).fetchone()
+
+    def scored_items(self, ids: list[int]) -> list[sqlite3.Row]:
+        """These items with their scores (scored ones only), best first."""
+        if not ids:
+            return []
+        marks = ",".join("?" * len(ids))
+        return self.conn.execute(
+            f"SELECT i.*, {_SCORED_COLS} FROM items i JOIN scores s ON s.item_id=i.id "
+            f"WHERE i.id IN ({marks}) ORDER BY s.best_score DESC, i.id",
+            [int(i) for i in ids],
+        ).fetchall()
 
     def scored_since(self, iso: str) -> list[sqlite3.Row]:
         """Items scored at or after `iso` (i.e. during one run), best first."""

@@ -64,14 +64,17 @@ def run_once(
     llm: LLM | None = None,
     transcript_fn=fetch_transcript,
     today: date | None = None,
+    digest_only: bool = False,
 ) -> RunResult:
+    """One pass. `digest_only` (Run now → Digest only) judges for the Digest and skips the
+    Actions planning, the day's picks and the project ideas, so Actions is left as it was."""
     lock = RunLock(cfg.data_path() / "run.lock")
     if not lock.acquire():
         return RunResult(
             run_id=0, ok=False, status_lines=["Run: another night-scout run is already in progress"]
         )
     try:
-        return _run_locked(cfg, fetch_only, store, llm, transcript_fn, today)
+        return _run_locked(cfg, fetch_only, store, llm, transcript_fn, today, digest_only)
     finally:
         lock.release()
 
@@ -83,12 +86,13 @@ def _run_locked(
     llm: LLM | None,
     transcript_fn: Any,
     today: date | None,
+    digest_only: bool = False,
 ) -> RunResult:
     own_store = store is None
     store = store or Store(cfg.db_file())
     own_llm = llm is None and not fetch_only
     embedder: Embedder | None = None
-    run_id = store.start_run()
+    run_id = store.start_run(mode="digest" if digest_only else "all")
     result = RunResult(run_id=run_id, ok=True)
     try:
         statuses = fetch_all(
@@ -106,7 +110,9 @@ def _run_locked(
             if llm is None:
                 llm = make_llm(cfg, "judge")
                 embedder = make_embedder(cfg)
-            _judge_and_digest(cfg, store, llm, run_id, result, transcript_fn, today, embedder)
+            _judge_and_digest(
+                cfg, store, llm, run_id, result, transcript_fn, today, embedder, digest_only
+            )
         store.finish_run(run_id, "done" if result.ok else "failed", result.stats)
     except Exception as e:
         log.exception("run %s failed", run_id)
@@ -149,6 +155,7 @@ def _judge_and_digest(
     transcript_fn,
     today: date | None,
     embedder: Embedder | None = None,
+    digest_only: bool = False,
 ) -> None:
     emb: Embedder = embedder or llm
     try:
@@ -324,13 +331,14 @@ def _judge_and_digest(
             judged.digest_topic,
             row["title"][:80],
         )
-        if profile.projects and relevance >= cfg.thresholds.relevance:
+        if profile.projects and relevance >= cfg.thresholds.relevance and not digest_only:
             worth_actions.append((row, judged, transcript))
     if lost_model is None:
         progress("judge", len(chosen), len(chosen))
 
+    t_judged = time.monotonic()
     # Next steps for the items that cleared the bar, once judging is done.
-    if lost_model is None:
+    if lost_model is None and not digest_only:
         progress("actions", 0, len(worth_actions))
     for n, (row, judged, transcript) in enumerate(worth_actions, 1):
         if lost_model is not None:
@@ -379,6 +387,19 @@ def _judge_and_digest(
         new=scored,
     )
 
+    if digest_only:  # Run now → Digest only: today's picks, Actions and ideas stay as they were
+        _status(
+            store,
+            run_id,
+            result,
+            "pipeline:actions",
+            "Actions",
+            True,
+            "not updated (a Digest-only run)",
+        )
+        result.stats["planning_secs"] = 0
+        return
+
     # The digest covers everything judged today, so a second run the same day adds to
     # the morning list instead of replacing it.
     day = today or date.today()
@@ -394,6 +415,7 @@ def _judge_and_digest(
         cfg.thresholds.relevance,
         cfg.thresholds.digest_size,
     )
+    picks = keep_earlier_picks(store, day, picks, weights)
     result.digest_path = write_digest(
         store,
         cfg.digests_dir(),
@@ -414,6 +436,28 @@ def _judge_and_digest(
     )
     if cfg.thresholds.ideas > 0 and lost_model is None and profile.projects:
         _ideas(cfg, store, llm, profile, run_id, result, day, scored_today, weights, progress)
+    result.stats["planning_secs"] = round(time.monotonic() - t_judged)
+
+
+def keep_earlier_picks(
+    store: Store, day: date, picks: list[sqlite3.Row], weights: Weights
+) -> list[sqlite3.Row]:
+    """A second run the same day (Run now) never takes away what the morning picked: the day's
+    earlier picks stay (unless you hid them), and anything new that ranks in today's top joins
+    them. Best first, so the list can grow past digest_size on a busy day."""
+    row = store.digest(day.isoformat())
+    if row is None:
+        return picks
+    try:
+        earlier = [int(i) for i in json.loads(row["item_ids"] or "[]")]
+    except (TypeError, ValueError):
+        return picks
+    have = {int(r["id"]) for r in picks}
+    missing = [i for i in earlier if i not in have and i not in weights.ignored_items]
+    if not missing:
+        return picks
+    merged = picks + store.scored_items(missing)
+    return sorted(merged, key=lambda r: (-(r["best_score"] or 0.0), r["id"]))
 
 
 def _ideas(

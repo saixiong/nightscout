@@ -67,7 +67,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     from .core.pipeline import run_once
 
     cfg = load_config(args.config)
-    result = run_once(cfg, fetch_only=args.fetch_only)
+    result = run_once(
+        cfg, fetch_only=args.fetch_only, digest_only=getattr(args, "digest_only", False)
+    )
     print()
     for line in result.status_lines:
         print("  " + line)
@@ -211,6 +213,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("run", help="one nightly pass: fetch, judge, propose, write the digest")
     s.add_argument("--fetch-only", action="store_true", help="fetch and store, skip the model")
+    s.add_argument(
+        "--digest-only",
+        action="store_true",
+        help="judge for the Digest only: skip Actions planning and ideas (Actions stays as it was)",
+    )
     s.set_defaults(func=cmd_run)
 
     s = sub.add_parser("serve", help="local web UI on 127.0.0.1")

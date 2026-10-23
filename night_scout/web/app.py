@@ -20,7 +20,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from urllib.parse import quote, urlsplit
 
 import httpx
@@ -97,6 +97,10 @@ PROFILE_LISTS = ("stack", "key_dependencies", "interests", "would_want_to_know")
 # Endpoints whose backend lands with the pipeline (B) and providers (C) tracks. The UI is
 # built for them already and shows a calm "not wired yet" until they answer.
 NOT_YET_ROUTES: list[tuple[str, str]] = []  # every v2 endpoint is wired
+
+
+class RunBody(BaseModel):
+    mode: Literal["all", "digest"] = "all"  # Run now: Digest and Actions, or the Digest only
 
 
 class ToggleBody(BaseModel):
@@ -936,11 +940,41 @@ def create_app(
         w = compute_weights(store)
         return {"ok": True, "name": body.name, "muted": w.muted(body.name)}
 
+    def run_estimate() -> dict[str, int | None]:
+        """Seconds a run usually takes, from the latest finished runs: `all` (Digest and
+        Actions) and `digest` (Digest only: a Digest-only run's own time, else a full run minus
+        its Actions planning). None when there's nothing to go on yet."""
+        full = digest = None
+        for r in store.recent_runs():
+            if r["status"] != "done" or not r["finished_at"]:
+                continue
+            try:
+                secs = int(
+                    (
+                        datetime.fromisoformat(r["finished_at"])
+                        - datetime.fromisoformat(r["started_at"])
+                    ).total_seconds()
+                )
+            except (TypeError, ValueError):
+                continue
+            stats = _json(r["stats"], {})
+            if stats.get("mode") == "digest":
+                digest = digest if digest is not None else secs
+            elif full is None:
+                full = secs
+                planning = stats.get("planning_secs")
+                if digest is None and isinstance(planning, int | float):
+                    digest = max(60, secs - int(planning))
+            if full is not None and digest is not None:
+                break
+        return {"all": full, "digest": digest}
+
     @app.get("/api/run")
     def run_status() -> Any:
         run = store.last_run()
         info = run_dict(run)
         out: dict[str, Any] = {"running": bool(info and info["running"]), "run": info}
+        out["estimate"] = run_estimate()
         try:
             total = len(all_tasks(state["cfg"]))
         except Exception:
@@ -1923,14 +1957,15 @@ def create_app(
         return {"ok": True, "message": message, "schedule": schedule_info()}
 
     @app.post("/api/run")
-    def run_now() -> Any:
+    def run_now(body: RunBody | None = None) -> Any:
+        mode = body.mode if body else "all"
         if run_status()["running"]:
             raise HTTPException(409, "The scout is already out.")
         # Same rule as the pipeline: topics alone are enough (the Digest), projects add Actions.
         if not profile_projects() and not digest_profile().topics:
             raise HTTPException(400, "Add a topic or a project first.")
-        pid = setup_mod.start_run(state["cfg"], config_path)
-        return {"ok": True, "pid": pid}
+        pid = setup_mod.start_run(state["cfg"], config_path, digest_only=mode == "digest")
+        return {"ok": True, "pid": pid, "mode": mode}
 
     # -- not wired yet --------------------------------------------------------------------
     def not_yet() -> JSONResponse:

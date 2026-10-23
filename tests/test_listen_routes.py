@@ -255,7 +255,9 @@ def test_ready_by_morning_never_breaks_the_run(
     monkeypatch.setattr(
         pipeline,
         "run_once",
-        lambda c, fetch_only=False: SimpleNamespace(ok=True, status_lines=[], digest_path=None),
+        lambda c, fetch_only=False, **_k: SimpleNamespace(
+            ok=True, status_lines=[], digest_path=None
+        ),
     )
     monkeypatch.setattr(cli, "ready_by_morning", lambda c: seen.append("rec"))
     args = argparse.Namespace(config=config_path, fetch_only=False)
