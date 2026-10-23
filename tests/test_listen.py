@@ -284,3 +284,43 @@ def test_last_recording(cfg: Config, fake_voice: Path) -> None:
     listen.record(cfg, listen.plan_for(cfg, DIGEST))
     last = listen.last_recording(cfg)
     assert last and last["day"] == "2026-10-22" and last["bytes"] > 0
+
+
+# -- offline once downloaded --------------------------------------------------------------------
+def _hub(tmp_path: Path, files: list[str]) -> Path:
+    snap = tmp_path / "hf" / "hub" / "models--hexgrad--Kokoro-82M" / "snapshots" / "abc123"
+    for f in files:
+        (snap / f).parent.mkdir(parents=True, exist_ok=True)
+        (snap / f).write_bytes(b"x")
+    return tmp_path / "hf"
+
+
+def test_worker_knows_what_is_downloaded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from night_scout.tts import worker
+
+    monkeypatch.delenv("HF_HUB_CACHE", raising=False)
+    monkeypatch.setenv(
+        "HF_HOME", str(_hub(tmp_path, ["config.json", "kokoro-v1_0.pth", "voices/af_heart.pt"]))
+    )
+    assert worker.cached("af_heart") and not worker.cached("bm_george")
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "elsewhere"))
+    assert not worker.cached("af_heart")
+
+
+@pytest.mark.parametrize(("voice", "offline"), [("af_heart", "1"), ("bm_george", "0")])
+def test_worker_goes_offline_only_when_downloaded(
+    cfg: Config,
+    fake_voice: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    voice: str,
+    offline: str,
+) -> None:
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    monkeypatch.delenv("HF_HUB_CACHE", raising=False)
+    monkeypatch.setenv(
+        "HF_HOME", str(_hub(tmp_path, ["config.json", "kokoro-v1_0.pth", "voices/af_heart.pt"]))
+    )
+    monkeypatch.setenv("FAKE_TTS_EXPECT_OFFLINE", offline)  # the fake model fails otherwise
+    cfg.voice.voice = voice
+    assert listen.record(cfg, listen.plan_for(cfg, DIGEST))["status"] == "ready"

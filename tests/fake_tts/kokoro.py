@@ -14,6 +14,9 @@ class KPipeline:
     def __init__(self, lang_code, repo_id=None, **kw):
         if os.environ.get("FAKE_TTS_FAIL") == "load":
             raise RuntimeError("no model here")
+        want = os.environ.get("FAKE_TTS_EXPECT_OFFLINE")  # "1": must be offline; "0": must not
+        if want is not None and (os.environ.get("HF_HUB_OFFLINE") == "1") != (want == "1"):
+            raise RuntimeError(f"HF_HUB_OFFLINE={os.environ.get('HF_HUB_OFFLINE')!r}")
         self.lang_code = lang_code
 
     def __call__(self, text, voice=None, speed=1.0):

@@ -42,6 +42,27 @@ def read_json(path: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+REPO = "hexgrad/Kokoro-82M"
+MODEL_FILES = ("config.json", "kokoro-v1_0.pth")
+
+
+def hub_cache() -> Path:
+    """Where huggingface_hub keeps downloads ($HF_HUB_CACHE, $HF_HOME/hub, ~/.cache/...)."""
+    if os.environ.get("HF_HUB_CACHE"):
+        return Path(os.environ["HF_HUB_CACHE"]).expanduser()
+    home = os.environ.get("HF_HOME") or os.path.join(
+        os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "huggingface"
+    )
+    return Path(home).expanduser() / "hub"
+
+
+def cached(voice: str) -> bool:
+    """Kokoro's model and this voice are already downloaded (in some snapshot)."""
+    snaps = hub_cache() / f"models--{REPO.replace('/', '--')}" / "snapshots"
+    need = (*MODEL_FILES, f"voices/{voice}.pt")
+    return any(all((s / f).is_file() for f in need) for s in snaps.glob("*"))
+
+
 def next_chapter(chapters: list[dict], done: set[int], out: Path) -> int:
     """The wanted chapter if it's still to do, else the first one not done."""
     want = read_json(out / "want.json").get("id")
@@ -70,14 +91,17 @@ def main(argv: list[str]) -> int:
         write_json(mpath, m)
 
     update(pid=os.getpid(), status="recording")
+    # Once the model and voice are downloaded, don't ask the Hub again: each load would
+    # otherwise check online first, and a slow network stalls the recording. (Read by
+    # huggingface_hub when it's imported, so it's set before kokoro is.)
+    if "HF_HUB_OFFLINE" not in os.environ and cached(voice):
+        os.environ["HF_HUB_OFFLINE"] = "1"
     try:
         import numpy as np
         import soundfile as sf
         from kokoro import KPipeline
 
-        pipe = KPipeline(
-            lang_code="b" if voice.startswith("b") else "a", repo_id="hexgrad/Kokoro-82M"
-        )
+        pipe = KPipeline(lang_code="b" if voice.startswith("b") else "a", repo_id=REPO)
         done: set[int] = set()
         while len(done) < len(chapters):
             i = next_chapter(chapters, done, out)
