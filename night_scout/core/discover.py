@@ -209,6 +209,11 @@ def resolve_youtube(handle_or_url: str, client: PoliteClient) -> tuple[str, str]
 
     The id is checked against the channel's public feed, which also supplies the title.
     """
+    return youtube_feed_title(youtube_channel_id(handle_or_url, client), client)
+
+
+def youtube_channel_id(handle_or_url: str, client: PoliteClient) -> str:
+    """The channel id for an @handle, channel URL or id (opens the channel page if needed)."""
     channel_id, page = _youtube_target(handle_or_url)
     if channel_id is None and page is not None:
         try:
@@ -223,6 +228,11 @@ def resolve_youtube(handle_or_url: str, client: PoliteClient) -> tuple[str, str]
         if channel_id is None:
             raise ValueError(f"Couldn't find a channel id on {page}.")
     assert channel_id is not None
+    return channel_id
+
+
+def youtube_feed_title(channel_id: str, client: PoliteClient) -> tuple[str, str]:
+    """(channel_id, title) after checking the channel's public feed."""
     try:
         feed = client.get_public(YOUTUBE_FEED + channel_id)
     except SourceError as e:
@@ -313,10 +323,11 @@ def _add_arxiv(cfg: Config, value: str) -> None:
 
 
 def _add_youtube(cfg: Config, value: str, client: PoliteClient) -> None:
-    channel_id, title = resolve_youtube(value, client)
-    for y in cfg.sources.youtube:
+    channel_id = youtube_channel_id(value, client)
+    for y in cfg.sources.youtube:  # before the feed check: a duplicate needs no network
         if y.channel_id == channel_id:
             raise ValueError(f"Already following YouTube: {y.name}.")
+    channel_id, title = youtube_feed_title(channel_id, client)
     cfg.sources.youtube.append(
         YouTubeSource(name=" ".join(title.split())[:60], channel_id=channel_id)
     )
@@ -514,6 +525,17 @@ def add_source_keyed(
     own_client = client is None
     http = client or PoliteClient(contact=cfg.contact)
 
+    def by_message(msg: str) -> tuple[str | None, str | None]:
+        """The adders' duplicate messages name the source ("Already following YouTube: X.",
+        "... r/sub.", "... that feed as 'Name'."): match that against the configured sources,
+        no network needed. Only an unambiguous match counts."""
+        hits = []
+        for t in configured_tasks(cfg):
+            names = {t.label, t.label.removeprefix("Reddit ")}
+            if any(n and n in msg for n in names):
+                hits.append(t)
+        return (hits[0].key, hits[0].label) if len(hits) == 1 else (None, None)
+
     def existing() -> tuple[str | None, str | None]:
         """Which configured source `value` is: resolve it against an empty source list."""
         probe = cfg.model_copy(deep=True)
@@ -530,7 +552,8 @@ def add_source_keyed(
             _adders(work, value, http, client)[type]()
         except ValueError as e:
             if str(e).startswith("Already following"):  # the adders' own duplicate check
-                raise AlreadyFollowing(*existing(), message=str(e)) from e
+                found = by_message(str(e))
+                raise AlreadyFollowing(*(found if found[0] else existing()), message=str(e)) from e
             raise
         new = [t for t in configured_tasks(work) if t.key not in before]
         if not new:

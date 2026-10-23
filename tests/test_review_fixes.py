@@ -119,3 +119,26 @@ def test_github_search_is_not_checked() -> None:
     cfg = Config()
     add_source(cfg, "github", "topic:mcp language:python", client)
     assert not seen
+
+
+def test_readd_resolves_from_the_duplicate_message_without_network() -> None:
+    from night_scout.core.config import YouTubeSource
+    from night_scout.core.discover import AlreadyFollowing, add_source_keyed
+
+    cfg = Config()
+    cfg.sources.youtube = [YouTubeSource(name="Fireship", channel_id="UCsBjURrPoezykLs9EqgamOA")]
+    channel_page = (
+        '<link rel="canonical" href="https://www.youtube.com/channel/UCsBjURrPoezykLs9EqgamOA">'
+    )
+    calls = {"n": 0}
+
+    def flaky(r: httpx.Request) -> httpx.Response:
+        calls["n"] += 1  # the first resolve works, any later one fails (YouTube flapping)
+        return httpx.Response(200, text=channel_page) if calls["n"] == 1 else httpx.Response(500)
+
+    client, _ = _gh({"youtube.com": flaky})
+    with pytest.raises(AlreadyFollowing) as e:
+        add_source_keyed(cfg, "youtube", "@Fireship", client)
+    assert (
+        e.value.key == "youtube:UCsBjURrPoezykLs9EqgamOA" and e.value.label == "YouTube: Fireship"
+    )
