@@ -91,7 +91,17 @@ def strip_thinking(text: str | None) -> str:
     t = (text or "").strip()
     if _LEAK.match(t) and "<channel|>" in t:
         t = t.rsplit("<channel|>", 1)[1]
-    return t.replace("<|channel|>", "").replace("<channel|>", "").strip()
+    t = t.replace("<|channel|>", "").replace("<channel|>", "").strip()
+    return _FAKE_BUTTON.sub("", t).strip()
+
+
+# Gemma sometimes "draws" the proposal button as a link, e.g. "[Add source](button_id_placeholder)".
+# The real button is the card under the answer, so a made-up button link is dropped.
+_FAKE_BUTTON = re.compile(
+    r"\[(?:➕\s*)?(?:Add source|Add topic|Not now)[^\]\n]{0,40}\]"
+    r"\((?!https?://|#/)[^)\n]{0,80}\)[ \t]*\n?",
+    re.IGNORECASE,
+)
 
 
 LIMIT_NOTE = (
@@ -549,7 +559,8 @@ APP_SYSTEM = (
     "[About](#/settings/about). Never use a web address for a page of the app.\n"
     "- To add a source or a topic for them, call propose_source or propose_topic. That "
     "shows the reader a button; nothing changes until they click it. Never say you added "
-    "something: say you've put a button below. Only propose what they asked for.\n"
+    "something: say you've put a button below. Only propose what they asked for. The button "
+    "appears under your answer by itself: never write it as a link or placeholder.\n"
     "- One source per call: for several sources, call propose_source once for each, in this "
     "answer. A button exists only for a call that succeeded, so mention only those; if one "
     "failed, say which and why (or retry with what the error suggests).\n"

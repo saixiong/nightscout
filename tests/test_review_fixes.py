@@ -182,3 +182,18 @@ def test_youtube_plain_channel_name_tries_the_handle() -> None:
     client, _ = _gh({"youtube.com/@NoSuchChannelHere": 404})
     with pytest.raises(ValueError, match="guessed from the name"):
         add_source(Config(), "youtube", "No Such Channel Here", client)
+
+
+def test_answers_drop_made_up_button_links() -> None:
+    from night_scout.core.chat import strip_thinking
+
+    raw = (
+        "I've put a button below for Two Minute Papers.\n\n"
+        "[Add source](button_id_placeholder)\nanswer end"
+    )
+    assert strip_thinking(raw) == "I've put a button below for Two Minute Papers.\n\nanswer end"
+    assert (
+        strip_thinking("See [Sources](#/sources) or [docs](https://ex.com).")
+        == "See [Sources](#/sources) or [docs](https://ex.com)."
+    )
+    assert strip_thinking("[Not now](skip)") == ""
