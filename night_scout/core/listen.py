@@ -102,6 +102,10 @@ def check_available(refresh: bool = False) -> tuple[bool, str | None]:
     """(available, why not). Asks the voice Python to import kokoro and soundfile, in a
     subprocess so torch never loads here. Cached per Python; refresh re-asks."""
     py = voice_python()
+    if not refresh:  # a cached answer never waits for a re-check that's running
+        got = _avail.get(py)
+        if got is not None:
+            return got
     with _avail_lock:
         if not refresh and py in _avail:
             return _avail[py]

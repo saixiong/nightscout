@@ -68,6 +68,29 @@ def test_missing_kokoro_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
     assert not ok and why and "FileNotFoundError" in why
 
 
+def test_a_cached_answer_does_not_wait_for_a_recheck(monkeypatch: pytest.MonkeyPatch) -> None:
+    import threading
+
+    listen._avail[listen.voice_python()] = (True, None)
+    started, release = threading.Event(), threading.Event()
+
+    def slow_run(*a: object, **k: object) -> object:
+        started.set()
+        release.wait(5)
+        raise OSError("still checking")
+
+    monkeypatch.setattr(listen.subprocess, "run", slow_run)
+    t = threading.Thread(target=listen.check_available, kwargs={"refresh": True})
+    t.start()
+    assert started.wait(5)
+    t0 = time.time()
+    assert listen.check_available() == (True, None)  # Settings → Voice saving a choice
+    assert time.time() - t0 < 0.5
+    release.set()
+    t.join()
+    assert listen.check_available()[0] is False  # the re-check's answer replaces it
+
+
 def test_voice_python_defaults_to_this_python(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("NIGHT_SCOUT_TTS_PYTHON")
     assert listen.voice_python() == sys.executable

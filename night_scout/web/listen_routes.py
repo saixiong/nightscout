@@ -52,8 +52,8 @@ def register(
     ).start()
 
     def voice_view(refresh: bool = False) -> dict[str, Any]:
-        c: Config = state["cfg"]
         ok, why = listen.check_available(refresh=refresh)
+        c: Config = state["cfg"]  # after the check: a re-check can take seconds
         return {
             "available": ok,
             "error": why,

@@ -275,7 +275,10 @@ async function renderVoice() {
   $("#vMorning").onclick = () => saveVoice({ ready_by_morning: !s.ready_by_morning }, !s.ready_by_morning ? "<b>Ready by morning is on.</b> The nightly run records the Digest." : "<b>Ready by morning is off.</b> Listen records when you press it.");
 }
 async function saveVoice(body, msg) {
+  const was = { ...VV.settings };
+  Object.assign(VV.settings, body); renderVoice(); // show the choice now; the save follows
   const r = await api("PUT", "/api/voice", body);
+  if (!r.ok) { VV.settings = was; renderVoice(); }
   if (!r.ok) return failToast(r, "Saving voice settings");
   VV = r.data; renderVoice(); toast(msg);
   if (body.speed) NS.listen?.defaultRate(body.speed);
