@@ -67,7 +67,7 @@ In the Digest, 👎 and 🔇 work as described above. On an Action, 👍 and �
 
 # Projects
 
-Projects are optional; they power Actions. The Projects page is what the scout judges Actions against. For each project folder, Gemma reads the README and dependency files and writes a profile: purpose, stack, key dependencies, interests, and what you'd want to know about. Every item Gemma reads is scored against every project. Edit anything; your edits are what tomorrow's run uses. **Rebuild with Gemma** rewrites the profile from the folder again and overwrites your edits.
+Projects are optional; they power Actions. Add one in Setup (step 2): **📁 Choose folder…** opens Finder or File Explorer, or pick a suggested folder, or use **or type a path**. Choosing a folder only works in a browser on the computer running Night Scout; from another device, type the path. The Projects page is what the scout judges Actions against. For each project folder, Gemma reads the README and dependency files and writes a profile: purpose, stack, key dependencies, interests, and what you'd want to know about. Every item Gemma reads is scored against every project. Edit anything; your edits are what tomorrow's run uses. **Rebuild with Gemma** rewrites the profile from the folder again and overwrites your edits.
 
 # Sources
 
