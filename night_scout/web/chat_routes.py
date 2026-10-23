@@ -100,6 +100,7 @@ def register(
     jobs: Any,
 ) -> None:
     chat.ensure_tables(store)
+    chat.purge_deleted(store, state["cfg"].data_path(), older_than=0)  # Undo windows end on restart
     live: dict[int, dict[str, Any]] = {}  # thread id → what the running turn is doing
     live_lock = threading.Lock()
     ask_lock = threading.Lock()
@@ -244,6 +245,8 @@ def register(
         return {"ok": True, "thread": tid, "turn": turn, "status": "running"}
 
     def user_attachment(thread_id: int, message_id: int, n: int) -> dict[str, Any]:
+        if chat.get_thread(store, thread_id) is None:  # none, or deleted
+            raise HTTPException(404, "No such conversation")
         row = store.conn.execute(
             "SELECT attachments FROM chat_messages WHERE id=? AND thread_id=? AND role='user'",
             (message_id, thread_id),
@@ -295,7 +298,7 @@ def register(
     @config_writer
     def chat_proposal(thread_id: int, message_id: int, body: ProposalBody) -> Any:
         found = chat.proposal(store, thread_id, message_id)
-        if found is None:
+        if found is None or chat.get_thread(store, thread_id) is None:
             raise HTTPException(404, "No such suggestion")
         prop, decided = found
         if decided:
@@ -357,6 +360,39 @@ def register(
             "error": error,
             "progress": progress,
         }
+
+    # -- history ------------------------------------------------------------------------
+    def purge_later() -> None:
+        t = threading.Timer(
+            chat.UNDO_SECONDS + 1, lambda: chat.purge_deleted(store, state["cfg"].data_path())
+        )
+        t.daemon = True
+        t.start()
+
+    @app.get("/api/chats")
+    def chat_list(q: str = "", kind: str = "all") -> Any:
+        if kind not in chat.HISTORY_KINDS:
+            raise HTTPException(400, f"kind must be one of {', '.join(chat.HISTORY_KINDS)}.")
+        chat.purge_deleted(store, state["cfg"].data_path())
+        return chat.list_threads(store, q=q, kind=kind)
+
+    @app.delete("/api/chat/{thread_id}")
+    def chat_delete(thread_id: int) -> Any:
+        if chat.get_thread(store, thread_id) is None:
+            raise HTTPException(404, "No such conversation")
+        if jobs.get(f"chat:{thread_id}").get("state") == "running":
+            raise HTTPException(
+                409, "Gemma is still answering in this conversation. Try again when it's done."
+            )
+        chat.delete_thread(store, thread_id)
+        purge_later()
+        return {"ok": True, "undo_seconds": chat.UNDO_SECONDS}
+
+    @app.post("/api/chat/{thread_id}/restore")
+    def chat_restore(thread_id: int) -> Any:
+        if not chat.restore_thread(store, thread_id):
+            raise HTTPException(404, "That conversation is gone for good.")
+        return {"ok": True}
 
     # -- web search settings --------------------------------------------------------------
     def brave_view() -> dict[str, Any] | None:

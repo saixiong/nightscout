@@ -11,9 +11,11 @@ from __future__ import annotations
 import json
 import logging
 import re
+import shutil
 import time
 from collections.abc import Callable
-from datetime import date
+from datetime import date, timedelta
+from pathlib import Path
 from typing import Any
 
 from . import attachments as att
@@ -119,6 +121,9 @@ def ensure_tables(store: Store) -> None:
         for col in ("attachments", "decision"):  # added with the general chat
             if col not in have:
                 conn.execute(f"ALTER TABLE chat_messages ADD COLUMN {col} TEXT")
+        threads = {r[1] for r in conn.execute("PRAGMA table_info(chat_threads)")}
+        if "deleted_at" not in threads:  # added with chat history (Delete keeps an Undo window)
+            conn.execute("ALTER TABLE chat_threads ADD COLUMN deleted_at TEXT")
 
 
 def _now() -> str:
@@ -136,7 +141,10 @@ def create_thread(store: Store, context: dict[str, Any], title: str) -> int:
 
 
 def get_thread(store: Store, thread_id: int) -> dict[str, Any] | None:
-    row = store.conn.execute("SELECT * FROM chat_threads WHERE id=?", (thread_id,)).fetchone()
+    """A conversation, or None if there is none (or it was deleted, even within the Undo window)."""
+    row = store.conn.execute(
+        "SELECT * FROM chat_threads WHERE id=? AND deleted_at IS NULL", (thread_id,)
+    ).fetchone()
     if row is None:
         return None
     try:
@@ -341,6 +349,171 @@ def turn_status(store: Store, thread_id: int) -> str:
     if row is None:
         return "done"
     return {"assistant": "done", "error": "error"}.get(row["role"], "pending")
+
+
+# -- history -------------------------------------------------------------------------------
+UNDO_SECONDS = 10.0  # a deleted conversation can be restored this long, then it is purged
+LIST_MAX = 500
+SNIPPET = 240
+HISTORY_KINDS = ("all", "app", "digest", "item", "files")
+_MD = re.compile(r"\*\*|__|`+|^#+\s*|^\s*[*-]\s+|^\s*\d+\.\s+", re.M)
+_LINK = re.compile(r"\[([^\]\n]{1,200})\]\([^)\n]{1,500}\)")
+
+
+def plain(text: str | None) -> str:
+    """Markdown → one line of plain text, for list snippets."""
+    t = _LINK.sub(r"\1", str(text or ""))
+    return " ".join(_MD.sub("", t).split())
+
+
+def _like(q: str) -> str:
+    return "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+
+
+def _window(text: str, q: str) -> str:
+    """The part of `text` around the first match of `q` (case-insensitive)."""
+    i = text.lower().find(q.lower())
+    if i < 0:
+        return clip(text, SNIPPET)[0]
+    start = max(0, i - 70)
+    part = text[start : i + len(q) + 150]
+    return ("…" if start else "") + part + ("…" if i + len(q) + 150 < len(text) else "")
+
+
+def context_label(store: Store, context: dict[str, Any]) -> tuple[str, str]:
+    """What a conversation is about, as the drawer names it: (label, icon kind)."""
+    kind = context.get("kind")
+    if kind == "item":
+        try:
+            item = store.item(int(context.get("id") or 0))
+        except (TypeError, ValueError):
+            item = None
+        if item is None:
+            return "Story · no longer in your data", "story"
+        score = store.score(int(item["id"]))
+        headline = _col(score, "headline") if score else None
+        title = headline or " ".join(str(item["title"] or "").split())
+        video = item["source"] == "youtube"
+        noun, icon = ("Video", "video") if video else ("Story", "story")
+        return f"{noun} · {clip(title, 90)[0]}", icon
+    if kind == "digest":
+        return f"Digest · {_day_name(str(context.get('day') or ''))}", "digest"
+    return "Night Scout", "app"
+
+
+def list_threads(
+    store: Store, q: str = "", kind: str = "all", limit: int = LIST_MAX
+) -> dict[str, Any]:
+    """Saved conversations, newest first. `q` searches every question and answer and the title;
+    `kind` narrows to Night Scout (app), Digest, Stories (item) or conversations with files."""
+    q = " ".join(q.split())[:200]
+    where, args = ["t.deleted_at IS NULL"], []
+    if q:
+        where.append(
+            "(t.title LIKE ? ESCAPE '\\' OR EXISTS (SELECT 1 FROM chat_messages m "
+            "WHERE m.thread_id=t.id AND m.role IN ('user', 'assistant') "
+            "AND m.content LIKE ? ESCAPE '\\'))"
+        )
+        args += [_like(q), _like(q)]
+    if kind in ("app", "digest", "item"):
+        where.append("json_extract(t.context, '$.kind') = ?")
+        args.append(kind)
+    elif kind == "files":
+        where.append(
+            "EXISTS (SELECT 1 FROM chat_messages m WHERE m.thread_id=t.id AND m.role='user' "
+            "AND m.attachments IS NOT NULL AND m.attachments NOT IN ('', '[]'))"
+        )
+    rows = store.conn.execute(
+        f"SELECT t.* FROM chat_threads t WHERE {' AND '.join(where)} "
+        "ORDER BY t.updated_at DESC, t.id DESC LIMIT ?",
+        (*args, max(1, min(int(limit), LIST_MAX))),
+    ).fetchall()
+    total = store.conn.execute(
+        "SELECT COUNT(*) FROM chat_threads WHERE deleted_at IS NULL"
+    ).fetchone()[0]
+    out = []
+    for r in rows:
+        tid = int(r["id"])
+        msgs = store.conn.execute(
+            "SELECT role, content, attachments FROM chat_messages WHERE thread_id=? ORDER BY id",
+            (tid,),
+        ).fetchall()
+        try:
+            context = json.loads(r["context"])
+        except ValueError:
+            context = {}
+        label, icon = context_label(store, context)
+        files = [
+            str(a.get("name") or "attachment")
+            for m in msgs
+            if m["role"] == "user"
+            for a in att.metas(m["attachments"])
+        ]
+        answers = [m["content"] for m in msgs if m["role"] == "assistant" and m["content"]]
+        snippet = plain(answers[-1]) if answers else ""
+        hit = False
+        if q:
+            for m in msgs:
+                if m["role"] in ("user", "assistant") and q.lower() in str(m["content"]).lower():
+                    snippet, hit = _window(plain(m["content"]), q), True
+                    break
+        out.append(
+            {
+                "id": tid,
+                "title": r["title"],
+                "context": context,
+                "label": label,
+                "icon": icon,
+                "created_at": r["created_at"],
+                "updated_at": r["updated_at"],
+                "questions": sum(1 for m in msgs if m["role"] == "user"),
+                "tools": sum(1 for m in msgs if m["role"] == "tool"),
+                "files": files,
+                "snippet": snippet if hit else clip(snippet, SNIPPET)[0],
+            }
+        )
+    return {"threads": out, "total": int(total), "q": q, "kind": kind}
+
+
+def delete_thread(store: Store, thread_id: int) -> bool:
+    """Hide a conversation now; purge_deleted() removes it for good after UNDO_SECONDS."""
+    with store.tx() as conn:
+        cur = conn.execute(
+            "UPDATE chat_threads SET deleted_at=? WHERE id=? AND deleted_at IS NULL",
+            (_now(), thread_id),
+        )
+        return cur.rowcount > 0
+
+
+def restore_thread(store: Store, thread_id: int) -> bool:
+    """Undo a delete that hasn't been purged yet."""
+    with store.tx() as conn:
+        cur = conn.execute(
+            "UPDATE chat_threads SET deleted_at=NULL WHERE id=? AND deleted_at IS NOT NULL",
+            (thread_id,),
+        )
+        return cur.rowcount > 0
+
+
+def purge_deleted(store: Store, data_dir: Path, older_than: float | None = None) -> int:
+    """Remove conversations deleted more than `older_than` seconds ago (default: the Undo
+    window): their messages, the thread and its attachment files. Returns how many."""
+    wait = UNDO_SECONDS if older_than is None else older_than
+    cutoff = (utcnow() - timedelta(seconds=wait)).isoformat()
+    with store.tx() as conn:
+        ids = [
+            int(r[0])
+            for r in conn.execute(
+                "SELECT id FROM chat_threads WHERE deleted_at IS NOT NULL AND deleted_at <= ?",
+                (cutoff,),
+            )
+        ]
+        for tid in ids:
+            conn.execute("DELETE FROM chat_messages WHERE thread_id=?", (tid,))
+            conn.execute("DELETE FROM chat_threads WHERE id=?", (tid,))
+    for tid in ids:
+        shutil.rmtree(att.folder(data_dir, tid), ignore_errors=True)
+    return len(ids)
 
 
 # -- context -------------------------------------------------------------------------------
