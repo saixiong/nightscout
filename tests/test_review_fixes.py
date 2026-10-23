@@ -197,3 +197,20 @@ def test_answers_drop_made_up_button_links() -> None:
         == "See [Sources](#/sources) or [docs](https://ex.com)."
     )
     assert strip_thinking("[Not now](skip)") == ""
+
+
+def test_github_check_is_one_quick_try() -> None:
+    calls = {"n": 0}
+
+    def slow(r: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        raise httpx.ReadTimeout("slow", request=r)
+
+    client, _ = _gh({"api.github.com/repos/": slow})
+    cfg = Config()
+    add_source(cfg, "github", "astral-sh/uv", client)  # GitHub too slow: keep the name, don't retry
+    assert (
+        calls["n"] == 1
+        and cfg.sources.github is not None
+        and "astral-sh/uv" in cfg.sources.github.releases
+    )

@@ -444,7 +444,10 @@ def _github_repo(repo: str, http: PoliteClient, token_env: str) -> str:
     if token:
         headers["Authorization"] = f"Bearer {token}"
     try:
-        data = http.get(f"https://api.github.com/repos/{repo}", headers=headers).json()
+        # one quick try: this runs inside a chat tool call; if GitHub is slow, keep the name
+        data = http.get(
+            f"https://api.github.com/repos/{repo}", headers=headers, timeout=6, retries=0
+        ).json()
     except SourceError as e:
         if e.kind == "not-found":
             name = repo.split("/", 1)[1]
@@ -472,6 +475,8 @@ def _github_guess(name: str, http: PoliteClient, headers: dict[str, str]) -> lis
             "https://api.github.com/search/repositories",
             params={"q": f"{name} in:name", "sort": "stars", "order": "desc", "per_page": 10},
             headers=headers,
+            timeout=6,
+            retries=0,
         ).json()
     except (SourceError, ValueError):
         return []

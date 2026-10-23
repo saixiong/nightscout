@@ -83,20 +83,30 @@ class PoliteClient:
         url: str,
         params: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
+        *,
+        timeout: float | None = None,
+        retries: int | None = None,
     ) -> httpx.Response:
+        """`timeout`/`retries` override the client's defaults for this call (interactive checks
+        want one quick try; the nightly run keeps the patient defaults)."""
         host = urlsplit(url).hostname or ""
         attempt = 0
+        max_retries = self._max_retries if retries is None else retries
         while True:
             self._wait_turn(host)
             try:
-                resp = self._client.get(url, params=params, headers=headers)
+                resp = (
+                    self._client.get(url, params=params, headers=headers)
+                    if timeout is None
+                    else self._client.get(url, params=params, headers=headers, timeout=timeout)
+                )
             except httpx.TimeoutException as e:
                 err: SourceError = SourceError(f"timed out ({host})", "network")
-                if attempt >= self._max_retries:
+                if attempt >= max_retries:
                     raise err from e
             except httpx.HTTPError as e:
                 err = SourceError(f"network error ({type(e).__name__})", "network")
-                if attempt >= self._max_retries:
+                if attempt >= max_retries:
                     raise err from e
             else:
                 if resp.status_code < 400:
@@ -104,7 +114,7 @@ class PoliteClient:
                 if resp.status_code == 429 or resp.status_code >= 500:
                     kind = "rate-limited" if resp.status_code == 429 else "error"
                     err = SourceError(f"HTTP {resp.status_code}", kind)
-                    if attempt >= self._max_retries:
+                    if attempt >= max_retries:
                         raise err
                     retry_after = _retry_after(resp)
                     if retry_after is not None and retry_after > 60:
