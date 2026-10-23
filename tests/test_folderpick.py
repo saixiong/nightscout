@@ -48,6 +48,11 @@ def test_cancel_is_not_an_error(monkeypatch) -> None:
     assert folderpick.choose(None, ZENITY) is None
 
 
+def test_a_dialog_closed_from_outside_counts_as_cancelled(monkeypatch) -> None:
+    monkeypatch.setattr(subprocess, "run", _run(code=-15))
+    assert folderpick.choose(None, FINDER) is None
+
+
 def test_other_failures_are_reported(monkeypatch) -> None:
     monkeypatch.setattr(
         subprocess, "run", _run(stderr="Not authorized to send Apple events. (-1743)", code=1)

@@ -141,8 +141,8 @@ def choose(start: str | None = None, picker: Picker | None = None) -> str | None
         if r.returncode != 0:
             # osascript: "User canceled. (-128)"; zenity/kdialog: exit 1 with no output.
             # Any other failure (say, macOS refusing the dialog) is reported, not hidden.
-            if p.kind == "finder" and "-128" in r.stderr:
-                return None
+            if r.returncode < 0 or (p.kind == "finder" and "-128" in r.stderr):
+                return None  # Cancel, or the dialog was closed from outside (logout, kill)
             if p.kind in ("zenity", "kdialog") and r.returncode == 1 and not out:
                 return None
             raise PickerError(f"{p.label} failed: {(r.stderr or r.stdout).strip()[:200]}")
