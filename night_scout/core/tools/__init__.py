@@ -128,9 +128,10 @@ TOOLS: dict[str, Tool] = {
             "propose_source",
             "Suggest a source",
             "➕",
-            "Offer to add a source. Checks it first; the reader gets an Add button and nothing "
-            "changes until they click it. Types: website, newsletter, podcast, arxiv, youtube, "
-            "reddit, hackernews, bluesky, mastodon, github.",
+            "Offer to add ONE source. Checks it first; the reader gets an Add button and nothing "
+            "changes until they click it. For several sources, call it once for each. Types: "
+            "website, newsletter, podcast, arxiv, youtube, reddit, hackernews, bluesky, mastodon, "
+            "github.",
             {
                 "type": "Source type, e.g. youtube, website, github, reddit.",
                 "value": "What to follow: a URL, a YouTube @handle or channel URL, a subreddit, "

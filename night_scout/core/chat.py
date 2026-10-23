@@ -550,6 +550,9 @@ APP_SYSTEM = (
     "- To add a source or a topic for them, call propose_source or propose_topic. That "
     "shows the reader a button; nothing changes until they click it. Never say you added "
     "something: say you've put a button below. Only propose what they asked for.\n"
+    "- One source per call: for several sources, call propose_source once for each, in this "
+    "answer. A button exists only for a call that succeeded, so mention only those; if one "
+    "failed, say which and why (or retry with what the error suggests).\n"
     "- Web links: only URLs that appear in tool results or the context. When you used web"
     ' pages, end with a short "Sources:" line listing them. Answers from the Guide or '
     "their setup need no Sources line.\n"
