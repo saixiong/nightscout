@@ -16,6 +16,7 @@ dependencies = [
   "pyyaml>=6.0",
   "pydantic>=2.6",
   "fastapi>=0.110",
+  "starlette>=0.39",  # FileResponse answers Range requests (Safari's <audio> needs 206s)
   "uvicorn>=0.29",
   "jinja2>=3.1",
   "python-multipart>=0.0.9",
@@ -33,6 +34,8 @@ Issues = "https://github.com/saixiong/nightscout/issues"
 dev = ["pytest>=8", "ruff>=0.5", "mypy>=1.10", "types-PyYAML"]
 # Whole-channel search for Scout key terms without a YouTube Data API key
 youtube = ["yt-dlp>=2026.8.19"]
+# Listen to your Digest: Kokoro reads it aloud, on this machine (about 1.1 GB with PyTorch)
+voice = ["kokoro>=0.9.4", "soundfile>=0.12"]
 
 [project.scripts]
 night-scout = "night_scout.cli:main"

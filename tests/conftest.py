@@ -94,3 +94,30 @@ def memory_keyring() -> MemoryKeyring:
     yield kr
     if previous is not None:
         keyring.set_keyring(previous)
+
+
+FAKE_TTS = Path(__file__).parent / "fake_tts"
+
+
+@pytest.fixture(autouse=True)
+def no_voice_addon(monkeypatch: pytest.MonkeyPatch) -> None:
+    """By default the voice add-on is 'not installed' and nobody asks a real Python (create_app
+    checks in the background). Tests that want it use the fake_voice fixture."""
+    from night_scout.core import listen
+
+    monkeypatch.setenv("NIGHT_SCOUT_TTS_PYTHON", "/nonexistent/tts-python")
+    monkeypatch.setattr(listen, "_avail", {"/nonexistent/tts-python": (False, "not in tests")})
+
+
+@pytest.fixture
+def fake_voice(monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The voice add-on 'installed': this Python, with fake kokoro/soundfile/numpy modules
+    (tests/fake_tts) on its path, so the real worker script runs with no model."""
+    import sys
+
+    from night_scout.core import listen
+
+    monkeypatch.setenv("NIGHT_SCOUT_TTS_PYTHON", sys.executable)
+    monkeypatch.setenv("PYTHONPATH", str(FAKE_TTS))
+    monkeypatch.setattr(listen, "_avail", {})
+    return FAKE_TTS
