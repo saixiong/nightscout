@@ -124,7 +124,7 @@ function grouped(list) {
   return [...out];
 }
 async function histOpen() {
-  H.open = true; H.armed = null;
+  H.open = true; H.armed = null; H.data = null;  // never show the last list: it may hold a deleted chat or miss a new one
   $("#chatHist")?.setAttribute("aria-expanded", "true");
   histRender(); await histFetch();
   $("#histQ")?.focus();
