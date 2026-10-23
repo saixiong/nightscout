@@ -269,7 +269,7 @@ function renderMsgs() {
   for (const m of msgs) {
     if (m.role === "user") html += cards + userMsg(m.content, m.attachments, m.id);
     else if (m.role === "tool" && proposal(m)) { cards += proposeCard(m); continue; }
-    else if (m.role === "tool") html += toolCard(m);
+    else if (m.role === "tool") { html += toolCard(m); continue; }  // a tool chip must not drop the turn's pending cards
     else if (m.role === "assistant") html += `<div class="a">${md(m.content)}<p class="asec">answered in ${secs(m.seconds)}${m.model ? ` · ${esc(m.model)}` : ""}</p></div>` + cards;
     else if (m.role === "error") html += `<div class="a err"><p>${esc(m.content)}</p></div>` + cards;
     else continue;
