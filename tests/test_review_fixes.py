@@ -166,3 +166,19 @@ def test_youtube_bare_channel_id_still_needs_the_feed() -> None:
     client, _ = _gh({"/feeds/videos.xml": 404})
     with pytest.raises(ValueError, match="no public feed"):
         add_source(Config(), "youtube", "UCh13OyDSm-Kb8ij3yZArtFg", client)
+
+
+def test_youtube_plain_channel_name_tries_the_handle() -> None:
+    page = '<meta property="og:title" content="Two Minute Papers"><link rel="canonical" href="https://www.youtube.com/channel/UCbfYPyITQ-7l4upoX8nvctg">'
+    client, _ = _gh(
+        {
+            "youtube.com/@TwoMinutePapers": lambda r: httpx.Response(200, text=page),
+            "/feeds/videos.xml": 500,
+        }
+    )
+    cfg = Config()
+    add_source(cfg, "youtube", "Two Minute Papers", client)
+    assert cfg.sources.youtube[0].channel_id == "UCbfYPyITQ-7l4upoX8nvctg"
+    client, _ = _gh({"youtube.com/@NoSuchChannelHere": 404})
+    with pytest.raises(ValueError, match="guessed from the name"):
+        add_source(Config(), "youtube", "No Such Channel Here", client)

@@ -188,6 +188,11 @@ def _youtube_target(value: str) -> tuple[str | None, str | None]:
         if not _HANDLE.match(handle):
             raise ValueError(f"{v!r} isn't a valid YouTube @handle.")
         return None, f"https://www.youtube.com/@{handle}"
+    # A plain channel name ("Two Minute Papers") is usually its handle without the spaces.
+    if " " in v and "/" not in v and "." not in v:
+        guess = re.sub(r"[^A-Za-z0-9_.-]", "", v)
+        if _HANDLE.match(guess):
+            return None, f"https://www.youtube.com/@{guess}"
     url = v if "://" in v else "https://" + v
     parts = urlsplit(url)
     if parts.scheme not in ("http", "https") or (parts.hostname or "").lower() not in YOUTUBE_HOSTS:
@@ -224,6 +229,11 @@ def youtube_channel(handle_or_url: str, client: PoliteClient) -> tuple[str, str 
         try:
             html = client.get_public(page).content.decode("utf-8", errors="replace")
         except SourceError as e:
+            if (e.kind == "not-found" or "404" in str(e)) and " " in handle_or_url.strip():
+                raise ValueError(
+                    f"No YouTube channel at {page.rsplit('/', 1)[1]} (guessed from the name). "
+                    "Paste the channel's address (youtube.com/@name)."
+                ) from e
             raise ValueError(f"Couldn't open {page} ({e}).") from e
         for pat in _YT_ID_PATTERNS:
             m = pat.search(html)
