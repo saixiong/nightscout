@@ -382,7 +382,7 @@ function proposeCard(m) {
   const btns = done ? "" : `<div class="row"><button class="btn primary sm" data-do="add" data-mid="${m.id}" ${local.busy ? "disabled" : ""}>${local.busy === "add" ? "Adding…" : src ? "Add source" : "Add topic"}</button>
     <button class="btn ghost sm" data-do="skip" data-mid="${m.id}" ${local.busy ? "disabled" : ""}>Not now</button></div>`;
   return `<div class="propose ${done ? esc(d.state) : ""}"><p class="pr-h">${src ? `➕ Add source · ${esc(TYPE_NAME[p.type] || p.type || "")}` : "🏷 Add topic"}</p>
-    <p class="pr-v">${esc(label)}</p>${src && p.label && p.value && p.value !== p.label ? `<p class="pr-val">${esc(p.value)}</p>` : ""}${p.why ? `<p class="pr-why">${esc(p.why)}</p>` : ""}${note}${btns}</div>`;
+    <p class="pr-v">${esc(label)}</p>${src && p.label && p.value && p.value !== p.label ? `<p class="pr-val">${esc(p.value)}</p>` : ""}${src && p.corrected_from ? `<p class="pr-fix">Corrected from <code>${esc(p.corrected_from)}</code>: GitHub has no repository by that name.</p>` : ""}${p.why ? `<p class="pr-why">${esc(p.why)}</p>` : ""}${note}${btns}</div>`;
 }
 async function decide(mid, action) {
   const thread = C.thread, m = (C.data?.messages || []).find(x => x.id === mid);
