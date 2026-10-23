@@ -62,6 +62,7 @@ function freshState() {
     models: pid !== "ollama" && j.model ? { [pid]: j.model } : {}, tested: {},
     live: {}, testOut: {}, moreCloud: false, // live: a keyed preset's model list (array, "loading" or "failed")
     pulls: {}, olCheck: null, confirm: null, readQ: null, ipj: 0, addType: "website",
+    picking: false, typePath: false, // step 2: Finder / File Explorer is open; the typed-path box is shown
     time: D.sc.time, nightly: rerun ? D.sc.installed !== false : true, plist: false, go: "now",
     // Step 2: "Digest + My projects" or "Just the Digest" (projects are optional since Oct 22)
     mode: rerun && !D.setup.projects.length && (D.setup.topics || []).length ? "digest" : "projects",
@@ -428,6 +429,7 @@ function stepProjects(head) {
   const body = $("#sbody");
   const rows = projRows(), prof = Object.fromEntries(profiles().map(p => [p.name, p]));
   const unread = rows.filter(p => !p.profiled && p.exists);
+  const pk = D.setup.picker || { available: false };
   const T2 = "The Digest, or the Digest <em>plus your projects?</em>";
   const L2 = "Everyone gets the Digest: the night's best stories for the topics you type in step 4. Add projects and Gemma also tells you what to <b>do</b> about them: Issues, Changes and Improvements (the Actions page). Gemma reads each folder's README, manifests and file types, never your secrets.";
   const choose = `<div class="choices two">
@@ -449,7 +451,8 @@ function stepProjects(head) {
         <div class="pjp">${esc(p.path)}</div>
         ${p.profiled && pp ? `<div class="pjw">${esc(pp.purpose)}</div><div class="chips">${pp.stack.map(s => `<span class="chip">${esc(s)}</span>`).join("")}</div>` : p.exists ? `<div class="found">✓ found ${esc(p.found.join(" · "))}</div>` : ""}
       </div>`; }).join("") : `<div class="empty-box">No projects yet. Add a folder below; one is enough to start.</div>`}</div>
-    <div class="addrow"><input type="text" id="pjPath" list="pjSugg" placeholder="Folder path, e.g. ~/projects/my-app" autocomplete="off"><button class="btn" id="pjAdd">Add folder</button></div>
+    ${pickRow(pk, rows.length)}
+    <div class="addrow" ${!pk.available || U.typePath ? "" : "hidden"}><input type="text" id="pjPath" list="pjSugg" placeholder="Folder path, e.g. ~/projects/my-app" autocomplete="off"><button class="btn" id="pjAdd">Add folder</button></div>
     <datalist id="pjSugg">${D.setup.suggestions.map(s => `<option value="${esc(s.path)}">`).join("")}</datalist>
     ${D.setup.suggestions.length ? `<div class="chips mt10"><span class="muted small">Found on ${here()}:</span>${D.setup.suggestions.slice(0, 8).map(s => `<button class="chip add" data-add="${esc(s.path)}">+ ${esc(s.name)}</button>`).join("")}</div>` : ""}
     ${unread.length && !U.readQ ? `<div class="row"><button class="btn primary" id="readAll">✦ Read ${unread.length === 1 ? "it" : `${unread.length} projects`} with Gemma</button><span class="muted small">About 20–40 s each with a local model.</span></div>` : ""}
@@ -460,6 +463,15 @@ function stepProjects(head) {
     if (!r.ok) return toast(`<b>Not added.</b> ${esc(r.error)}`);
     await reload("setup"); mark("projects"); drawBody(); drawRail(); drawBar();
   };
+  $("#pjPick") && ($("#pjPick").onclick = async () => {
+    U.picking = true; drawBody();
+    const r = await api("POST", "/api/projects/pick", {});
+    if (!U) return;
+    U.picking = false; drawBody();
+    if (!r.ok) return toast(`<b>Couldn't open ${esc(pk.label)}.</b> ${esc(r.error)}`);
+    if (r.data.path) await add(r.data.path); // null: cancelled
+  });
+  $("#pjType") && ($("#pjType").onclick = () => { U.typePath = !U.typePath; drawBody(); if (U.typePath) $("#pjPath").focus(); });
   $("#pjAdd").onclick = () => add($("#pjPath").value.trim());
   $("#pjPath").onkeydown = e => { if (e.key === "Enter") $("#pjAdd").click(); };
   $$("[data-add]", body).forEach(b => b.onclick = () => add(b.dataset.add));
@@ -480,6 +492,17 @@ function stepProjects(head) {
   });
   $("#readAll") && ($("#readAll").onclick = () => readProjects(unread.map(p => p.name)));
   wireChoices();
+}
+// "📁 Choose folder…" opens Finder / File Explorer on this computer (POST /api/projects/pick).
+// From another device, or with no picker here, the typed-path box shows instead.
+function pickRow(pk, n) {
+  if (!pk.available) {
+    return pk.reason === "remote" ? `<div class="pknote"><b>Choosing a folder opens on the computer running Night Scout.</b> You're on another device, so type the folder's path instead.</div>` : "";
+  }
+  const label = U.picking ? `${esc(pk.label)} is open…` : n ? "Add another folder…" : "Choose folder…";
+  const hint = U.picking ? `Pick a folder there, or Cancel.` : `Opens ${esc(pk.label)}. Pick the folder you're building in.`;
+  return `<div class="pickrow"><button class="btn ${n ? "" : "primary"}" id="pjPick" ${U.picking || U.readQ ? "disabled" : ""}><span class="fi" aria-hidden="true">📁</span> ${label}</button>
+    <span class="hint">${hint}</span><button class="typeit" id="pjType">${U.typePath ? "hide" : "or type a path"}</button></div>`;
 }
 // Two-click buttons: the first click asks, the second within 4 s acts.
 function askAgain(key) {

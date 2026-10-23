@@ -34,7 +34,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, Validation
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .. import __version__
-from ..core import actions
+from ..core import actions, folderpick
 from ..core import schedule as schedule_mod
 from ..core import setup as setup_mod
 from ..core.config import (
@@ -186,6 +186,29 @@ class ProviderTestBody(BaseModel):
 
 
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
+# Headers a proxy or tunnel (cloudflared, ngrok, a reverse proxy) adds for the real client.
+PROXY_HEADERS = (
+    "forwarded",
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-real-ip",
+    "cf-connecting-ip",
+)
+
+
+def same_machine(request: Request, port: int) -> bool:
+    """True only for a browser on the computer running Night Scout: a loopback peer, the
+    loopback Host (not a tunnel's hostname from extra_hosts) and no proxy headers. Used to
+    decide whether a native dialog may open, since it opens on this computer's screen."""
+    peer = request.client.host if request.client else ""
+    host = request.headers.get("host", "")
+    return (
+        peer in ("127.0.0.1", "::1")
+        and host in (f"127.0.0.1:{port}", f"localhost:{port}")
+        and not any(h in request.headers for h in PROXY_HEADERS)
+    )
+
+
 # Keychain ids used for other keys (web search, YouTube): never a provider id.
 RESERVED_IDS = frozenset({"brave-search", "youtube-data-api"})
 
@@ -1857,8 +1880,16 @@ def create_app(
             )
         return rows
 
+    def picker_info(request: Request) -> dict[str, Any]:
+        p = folderpick.find()
+        if p is None:
+            return {"available": False, "reason": "none"}
+        if not same_machine(request, port):
+            return {"available": False, "reason": "remote"}
+        return {"available": True, "label": p.label}
+
     @app.get("/api/setup")
-    def setup_view() -> Any:
+    def setup_view(request: Request) -> Any:
         c = state["cfg"]
         suggestions = [{**s, "path": pretty_path(s["path"])} for s in setup_mod.suggest_projects(c)]
         return {
@@ -1867,7 +1898,23 @@ def create_app(
             "suggestions": suggestions,
             "schedule": schedule_info(),
             "platform": sys.platform,
+            "picker": picker_info(request),
         }
+
+    @app.post("/api/projects/pick")
+    def pick_project_folder(request: Request) -> Any:
+        """Open Finder / File Explorer on this computer and wait for a folder. Returns its
+        path ({"path": null} when cancelled); the page then adds it like a typed path."""
+        if not same_machine(request, port):
+            raise HTTPException(
+                403, "Choosing a folder only works on the computer running Night Scout."
+            )
+        bases = setup_mod.project_bases()  # start where the "Found on this Mac" folders are
+        try:
+            path = folderpick.choose(str(bases[0]) if bases else None)
+        except folderpick.PickerError as e:
+            raise HTTPException(409 if "already open" in str(e) else 400, str(e)) from e
+        return {"path": path}
 
     @app.post("/api/projects/add")
     @config_writer

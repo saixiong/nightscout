@@ -591,6 +591,15 @@ footer.status .ok { color: var(--good); } footer.status .warn { color: var(--amb
 .empty-box { border: 1px dashed var(--edge-hi); border-radius: 12px; padding: 22px; text-align: center; color: var(--muted); font-size: 13px; }
 .addrow { display: grid; grid-template-columns: 1fr auto; gap: 8px; margin-top: 12px; }
 .addrow input { font-family: var(--mono); }
+.addrow[hidden] { display: none; }
+.pickrow { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 12px; }
+.pickrow .btn { font-size: 14.5px; padding: 11px 18px; }
+.pickrow .btn .fi { font-size: 16px; }
+.pickrow .hint { color: var(--muted); font-size: 13px; }
+.pickrow .typeit { margin-left: auto; background: none; border: 0; padding: 0; color: var(--muted); font-size: 13px; text-decoration: underline dotted; cursor: pointer; }
+.pickrow .typeit:hover { color: var(--text); }
+.pknote { margin-top: 12px; font-size: 13px; color: var(--muted); border: 1px dashed var(--edge-hi); border-radius: 12px; padding: 11px 14px; }
+.pknote b { color: var(--text); }
 
 /* interests step */
 .isec { margin: 0 0 18px; }

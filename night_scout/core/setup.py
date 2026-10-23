@@ -71,17 +71,20 @@ def _known_paths(cfg: Config) -> set[Path]:
     return out
 
 
-def suggest_projects(cfg: Config) -> list[dict[str, Any]]:
-    """Folders under the usual project directories that look like projects and aren't added."""
+def project_bases() -> list[Path]:
+    """The usual project directories that exist here (NIGHT_SCOUT_PROJECT_DIRS overrides)."""
     env = os.environ.get("NIGHT_SCOUT_PROJECT_DIRS")
     bases = env.split(os.pathsep) if env else list(PROJECT_DIRS)
+    return [b for b in (Path(x).expanduser() for x in bases) if b.is_dir()]
+
+
+def suggest_projects(cfg: Config) -> list[dict[str, Any]]:
+    """Folders under the usual project directories that look like projects and aren't added."""
+    bases = project_bases()
     known = _known_paths(cfg)
     names = {project_name(r) for r in cfg.projects}
     out: list[dict[str, Any]] = []
-    for base in bases:
-        root = Path(base).expanduser()
-        if not root.is_dir():
-            continue
+    for root in bases:
         try:
             children = sorted(root.iterdir(), key=lambda p: p.name.lower())
         except OSError:
