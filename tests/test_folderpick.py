@@ -49,8 +49,14 @@ def test_cancel_is_not_an_error(monkeypatch) -> None:
 
 
 def test_a_dialog_closed_from_outside_counts_as_cancelled(monkeypatch) -> None:
-    monkeypatch.setattr(subprocess, "run", _run(code=-15))
+    monkeypatch.setattr(subprocess, "run", _run(code=-15))  # macOS / Linux: killed
     assert folderpick.choose(None, FINDER) is None
+    explorer = folderpick.Picker("explorer", "File Explorer", ("python", "-c", folderpick._TK))
+    monkeypatch.setattr(subprocess, "run", _run(code=1))  # Windows: terminated, no output
+    assert folderpick.choose(None, explorer) is None
+    monkeypatch.setattr(subprocess, "run", _run(code=1, stderr="TclError: no display"))
+    with pytest.raises(folderpick.PickerError, match="File Explorer failed: TclError"):
+        folderpick.choose(None, explorer)
 
 
 def test_other_failures_are_reported(monkeypatch) -> None:
