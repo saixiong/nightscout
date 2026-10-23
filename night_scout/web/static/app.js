@@ -176,7 +176,7 @@ function errorView(r) {
 
 /* ================= MORNING ================= */
 function morningState() {
-  if (RUN?.running) return "running";
+  if (RUN?.running && (LIVE.watch || !M.day || !visibleCards().length)) return "running";
   if (!B.projects.length && (B.topics || []).length) return "noprojects";
   if (!M.day) return "empty";
   if (!visibleCards().length && !(M.ideas || []).length) return "quiet";
@@ -209,6 +209,7 @@ function renderMorning(id, tab) {
           <p class="eyebrow">Good morning · ${esc(dayLabel())}</p>
           <h1><em>${words(cards.length)}</em> thing${cards.length === 1 ? "" : "s"}<br>worth doing.</h1>
           <p class="sub">Every item was checked against your ${M.projects.length} project${M.projects.length === 1 ? "" : "s"} for issues, changes and improvements. ${judgedLine()}</p>
+          ${runRow()}
           <div class="funnel">
             <div class="st"><b>${st.new ?? 0}</b><small>new</small></div><span class="arrow">→</span>
             <div class="st"><b>${st.scored ?? 0}</b><small>judged</small></div><span class="arrow">→</span>
@@ -222,6 +223,7 @@ function renderMorning(id, tab) {
       <div class="stage" id="stage"></div>
     </div>`;
     wireTilt($("#stage"));
+    wireRun(app);
     $$(".days button", app).forEach(b => b.onclick = async () => {
       if (b.dataset.day === M.day) return;
       const r = await loadMorning(b.dataset.day); if (!r.ok) return failToast(r);
@@ -638,6 +640,83 @@ function paneNote(c, pane, aid) {
   };
 }
 
+/* ---- Run now (Digest and Actions headers, and the empty states) ----
+   LIVE.watch: Actions shows the full live view (Watch it ›) instead of today's cards.
+   LIVE.manual: this tab started the run, so the "done" toast says "back", not "good morning". */
+const LIVE = { watch: false, manual: false };
+const STAGE_VERB = { fetch: "fetching", dedupe: "merging duplicates", prefilter: "pre-filtering", judge: "judging",
+  actions: "planning actions", ideas: "finding ideas", digest: "picking for Actions" };
+const digestOnlyRun = () => RUN?.run?.stats?.mode === "digest";
+const runStages = () => STAGES.filter(s => !(digestOnlyRun() && ["actions", "ideas", "digest"].includes(s[0])));
+function runProgress() {
+  const p = RUN?.progress || {}, st = runStages(), k = st.findIndex(s => s[0] === p.stage);
+  const frac = p.total ? Math.min(1, (p.done || 0) / p.total) : 0;
+  return { share: k < 0 ? 0.04 : (k + frac) / st.length, text: `${STAGE_VERB[p.stage] || "working"}${p.total ? ` ${p.done || 0} of ${p.total}` : ""}` };
+}
+const aboutMin = secs => secs ? `about ${Math.max(1, Math.round(secs / 60))} min` : null;
+function runRow(big = false) {
+  if (RUN?.running) {
+    const pr = runProgress();
+    return `<div class="runrow" id="runRow"><span class="runbtn out" role="status"><span class="rdot"></span>Scout is out · ${esc(pr.text)}${digestOnlyRun() ? " · Digest only" : ""}</span>
+      <span class="runbar" aria-hidden="true"><i data-w="${Math.round(pr.share * 100)}"></i></span><a class="runmeta runwatch" href="#/actions" id="runWatch">Watch it ›</a></div>`;
+  }
+  const last = RUN?.run, min = runMinutes(last);
+  const when = last?.started_at ? `${(last.started_at || "").slice(0, 10) === today() || new Date(last.started_at).toDateString() === new Date().toDateString() ? "today" : esc(fmtAt(last.started_at).split(",")[0])} ${esc(hhmm(last.started_at))}` : "";
+  const meta = last?.started_at ? `Last run ${when}${min ? ` · ${min} min` : ""} · adds anything new to today` : "Reads your sources now instead of waiting for tonight";
+  return `<div class="runrow ${big ? "wide" : ""}" id="runRow"><button class="${big ? "btn primary" : "runbtn"}" id="runNow" type="button" aria-haspopup="dialog" aria-expanded="false"><span class="tri">▶</span> ${big ? "Run the scout now" : "Run now"}</button>${big ? "" : `<span class="runmeta">${meta}</span>`}</div>`;
+}
+function wireRun(root = document) {
+  const row = $("#runRow", root); if (!row) return;
+  fx(row);
+  const watch = $("#runWatch", row);
+  if (watch) watch.onclick = e => { LIVE.watch = true; if (["morning", "actions"].includes(location.hash.split("/")[1])) { e.preventDefault(); reset(); route(); } };
+  const btn = $("#runNow", row);
+  if (btn) btn.onclick = e => { e.stopPropagation(); $("#runPop") ? closeRunPop() : openRunPop(row); };
+}
+function refreshRunRow() {
+  const row = $("#runRow"); if (!row || $("#runPop")) return;
+  row.outerHTML = runRow(row.classList.contains("wide"));
+  wireRun();
+}
+function openRunPop(row) {
+  closeRunPop();
+  const est = RUN?.estimate || {}, j = judge(), n = RUN?.sources_total ?? B?.sources_count ?? 0;
+  const projects = (B?.projects || []).length, since = RUN?.run?.started_at ? ` since ${esc(hhmm(RUN.run.started_at))}` : "";
+  const all = aboutMin(est.all) || "about 10–15 min", dig = aboutMin(est.digest) || "a few minutes less";
+  row.insertAdjacentHTML("beforeend", `<div class="runpop" id="runPop" role="dialog" aria-label="Run the scout now">
+    <h4>Run the scout now?</h4>
+    <p>It reads your ${n} source${n === 1 ? "" : "s"} for anything new${since}, judges it with Gemma, and adds it to today's <b>Digest</b>${projects ? " and <b>Actions</b>" : ""}. What's there now stays.</p>
+    ${projects ? `<div class="runmodes" role="radiogroup" aria-label="What to update">
+      <label class="runmode on"><input type="radio" name="runMode" value="all" checked><span><b>Digest and Actions</b><small>${all} · next steps for your projects too</small></span></label>
+      <label class="runmode"><input type="radio" name="runMode" value="digest"><span><b>Digest only</b><small>${dig} · Actions isn't updated, and new items get no next steps</small></span></label>
+    </div>` : ""}
+    <div class="runfacts">${projects ? "" : `<span>Takes</span><span>${all}</span>`}<span>Model</span><span>${esc(j.model)} · ${j.local ? `on ${here()}` : `via ${esc(j.provider)}`}</span><span>Meanwhile</span><span>use the app as usual, or close the tab</span></div>
+    <div class="acts"><button class="btn primary" id="runGo" type="button">▶ Run now</button><button class="btn ghost" id="runCancel" type="button">Cancel</button></div></div>`);
+  $("#runNow")?.setAttribute("aria-expanded", "true");
+  const pop = $("#runPop");
+  pop.onclick = e => e.stopPropagation();
+  $$("input[name=runMode]", pop).forEach(r => r.onchange = () => $$(".runmode", pop).forEach(l => l.classList.toggle("on", l.contains(r) ? r.checked : false)));
+  $("#runCancel").onclick = closeRunPop;
+  $("#runGo").onclick = () => startRun($("input[name=runMode]:checked", pop)?.value || "all");
+  $("#runGo").focus();
+}
+function closeRunPop() { $("#runPop")?.remove(); $("#runNow")?.setAttribute("aria-expanded", "false"); }
+document.addEventListener("click", e => { if ($("#runPop") && !e.target.closest("#runPop, #runNow")) closeRunPop(); });
+document.addEventListener("keydown", e => { if (e.key === "Escape" && $("#runPop")) { e.stopPropagation(); closeRunPop(); $("#runNow")?.focus(); } }, true);
+async function startRun(mode) {
+  const go = $("#runGo"); if (go) { go.disabled = true; go.textContent = "Starting…"; }
+  const r = await api("POST", "/api/run", { mode });
+  if (!r.ok) { closeRunPop(); return failToast(r, "Run now"); }
+  LIVE.manual = true;
+  closeRunPop();
+  toast(`<b>The scout is out.</b> ${mode === "digest" ? "Digest only. " : ""}New items join today's ${mode === "digest" || !(B?.projects || []).length ? "Digest" : "Digest and Actions"} when it's done.`);
+  const until = Date.now() + 60000;  // the run registers within a second or two; give it up to a minute
+  for (;;) { await loadRun(); if (RUN?.running || Date.now() > until) break; await new Promise(res => setTimeout(res, 1000)); }
+  let page = location.hash.split("/")[1] || "digest"; if (page === "actions") page = "morning";
+  if (page === "morning" || page === "digest") { NS.digestReset?.(); reset(); route(); } else chrome(page);
+  watchRun();
+}
+
 /* ---- Morning states: scout running, quiet, first run ---- */
 let runPoll;
 const scoutingFor = () => {
@@ -649,7 +728,9 @@ function renderMorningState(app, s) {
   const st = M.run?.stats || {};
   const projects = B.projects;
   const left = {
-    running: `<p class="eyebrow">Tonight · ${esc(fmtDay(today()))}</p><h1>The scout<br>is <em>out.</em></h1><p class="sub">Started at ${esc(hhmm(RUN?.run?.started_at))}. Your digest will be here when it's done. Close this tab; it doesn't need you.</p>`,
+    running: visibleCards().length
+      ? `<p class="eyebrow">Run now · ${esc(fmtDay(today()))}</p><h1>The scout<br>is <em>out.</em></h1><p class="sub">Started at ${esc(hhmm(RUN?.run?.started_at))}${digestOnlyRun() ? " · Digest only" : ""}. New items join today's ${digestOnlyRun() ? "Digest" : "Digest and Actions"} when it's done. Close this tab; it doesn't need you.</p><p class="sub"><a href="#/actions" id="liveBack">‹ Back to today's actions</a></p>`
+      : `<p class="eyebrow">Tonight · ${esc(fmtDay(today()))}</p><h1>The scout<br>is <em>out.</em></h1><p class="sub">Started at ${esc(hhmm(RUN?.run?.started_at))}. Your digest will be here when it's done. Close this tab; it doesn't need you.</p>`,
     quiet: M.ignored && !(M.cards || []).length
       ? `<p class="eyebrow">Good morning · ${esc(dayLabel())}</p><h1>All <em>clear.</em></h1><p class="sub">You've hidden every pick for today.</p>`
       : `<p class="eyebrow">Good morning · ${esc(dayLabel())}</p><h1>A <em>quiet</em><br>morning.</h1><p class="sub">Nothing cleared the bar today. That's the point: no feed to scroll.</p>`,
@@ -675,9 +756,9 @@ function renderMorningState(app, s) {
       <div class="row"><a class="btn primary" href="#/setup">Add a project ›</a><a class="btn ghost" href="#/digest">Back to the Digest</a></div>
       <p class="muted small mt22">Gemma reads only the README, manifests and file types. Your code never leaves this machine.</p>`;
   if (s === "empty") right = projects.length
-    ? `<h2 class="serif">Two commands.</h2>
-      <p class="summary">Run one pass now (about 15 minutes on Gemma 4 12B):</p><div class="cmdline">$ night-scout run</div>
-      <p class="summary">Or let it run every night at ${esc(B.schedule.time)} while you sleep:</p><div class="cmdline">$ night-scout schedule --install</div>
+    ? `<h2 class="serif">One run away.</h2>
+      <p class="summary">Run one pass now (about 10–15 minutes on ${esc(judge().model)}):</p>${runRow(true)}
+      <p class="summary">Or let it run every night at ${esc(B.schedule.time)} while you sleep: <a href="#/settings/schedule">Schedule</a>, or <code>night-scout schedule --install</code>.</p>
       <p class="muted small">Profile: ${projects.map(esc).join(" · ")} · <a href="#/projects">review it</a></p>`
     : B.setup?.needed ? `<h2 class="serif">Let's set it up.</h2>
       <p class="summary">Six short steps: pick the model, add your projects, choose what it reads and when it goes out.</p>
@@ -687,16 +768,20 @@ function renderMorningState(app, s) {
       <p class="summary">Point the scout at your project folders and let Gemma profile them:</p><div class="cmdline">$ night-scout init ~/code/my-app</div>
       <p class="summary">Run one pass now:</p><div class="cmdline">$ night-scout run</div>
       <p class="summary">Or every night at ${esc(B.schedule.time)}:</p><div class="cmdline">$ night-scout schedule --install</div>`;
-  app.innerHTML = `<div class="frame morning-state"><div class="col-left"><section class="hero">${left}</section></div>
+  app.innerHTML = `<div class="frame morning-state"><div class="col-left"><section class="hero">${left}${s === "quiet" ? runRow() : ""}</section></div>
     <div class="stage"><div class="big enter"><div class="big-scroll"><div class="state-card">${right}</div></div></div></div></div>`;
   wireTilt($(".stage", app));
   cur = null;
-  if (s === "running") { drawStages(); watchRun(); }
+  if (s === "running") {
+    drawStages(); watchRun();
+    const back = $("#liveBack"); if (back) back.onclick = e => { e.preventDefault(); LIVE.watch = false; reset(); route(); };
+  }
+  wireRun(app);
 }
 function drawStages() {
   const ul = $("#stages"); if (!ul || !RUN?.progress) return;
   const p = RUN.progress, stats = RUN.run?.stats || {};
-  const stages = STAGES.filter(s => s[0] !== "ideas" || B.features.ideas || p.stage === "ideas" || (p.stages_done || []).includes("ideas"));
+  const stages = runStages().filter(s => s[0] !== "ideas" || B.features.ideas || p.stage === "ideas" || (p.stages_done || []).includes("ideas"));
   let k = stages.findIndex(s => s[0] === p.stage); if (k < 0) k = 0;
   const doneSet = new Set(p.stages_done || []);
   ul.innerHTML = stages.map(([key, name, what, statKey, unit], i) => {
@@ -721,16 +806,19 @@ function watchRun() {
     if (page === "actions") page = "morning";
     const home = page === "morning" || page === "digest";
     if (was && !RUN.running) {
+      const manual = LIVE.manual, digestOnly = RUN.run?.stats?.mode === "digest";
+      LIVE.watch = false; LIVE.manual = false;
       await Promise.all([loadBoot(), loadMorning()]);
       NS.digestReset?.();
       if (home) { reset(); route(); }
       else chrome(page);
       const n = visibleCards().length;
-      toast(B.projects.length ? `<b>Good morning.</b> ${words(n)} thing${n === 1 ? "" : "s"} worth doing.` : `<b>Good morning.</b> Your Digest is ready.`);
+      const hi = manual ? "<b>The scout is back.</b>" : "<b>Good morning.</b>";
+      toast(B.projects.length && !digestOnly ? (n ? `${hi} ${words(n)} thing${n === 1 ? "" : "s"} worth doing.` : `${hi} Nothing new cleared the bar.`) : `${hi} Your Digest is ready.`);
     } else if (!was && RUN.running) {
       if (home) { NS.digestReset?.(); reset(); route(); } else chrome(page);
     } else if (RUN.running) {
-      drawStages(); chrome(page);
+      drawStages(); chrome(page); refreshRunRow();
     }
     watchRun();
   }, RUN?.running ? 3000 : 60000);
@@ -1149,7 +1237,7 @@ async function kickRun() {
   return !!RUN?.running;
 }
 
-Object.assign(NS, { runActive: () => !!RUN?.running, loadBoot, kickRun, $, $$, esc, md, toast, go, badge, wireTilt, chrome, card, kindPill, words, fx, api, failToast, ext, isWeb, scoutImg, reset, loading, errorView,
+Object.assign(NS, { runActive: () => !!RUN?.running, runRow, wireRun, loadBoot, kickRun, $, $$, esc, md, toast, go, badge, wireTilt, chrome, card, kindPill, words, fx, api, failToast, ext, isWeb, scoutImg, reset, loading, errorView,
   S, visibleCards, loadMorning, route });
 /* live views of the loaded data (Object.assign would copy today's value, not a getter) */
 Object.defineProperties(NS, { B: { get: () => B }, M: { get: () => M } });

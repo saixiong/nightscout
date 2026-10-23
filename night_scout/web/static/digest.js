@@ -73,11 +73,12 @@ function emptyState() {
     : noTopics
       ? `<h2 class="serif">What should it look for?</h2><p class="summary">Add a few topics you follow, in your own words. Projects are optional.</p>
          <div class="row"><a class="btn primary" href="#/digest/topics">Add topics ›</a><a class="btn ghost" href="#/setup">Run setup</a></div>`
-      : `<h2 class="serif">One run away.</h2><p class="summary">Run one pass now (about 15 minutes on Gemma 4 12B):</p><div class="cmdline">$ night-scout run</div>
+      : `<h2 class="serif">One run away.</h2><p class="summary">Run one pass now (about 10–15 minutes with Gemma):</p>${NS.runRow ? NS.runRow(true) : `<div class="cmdline">$ night-scout run</div>`}
          <p class="summary">Or let it run every night at ${esc(B().schedule.time)}. Your topics: ${D.digest_topics.map(esc).join(" · ")}. <a href="#/digest/topics">Edit</a></p>`;
   $("#app").innerHTML = `<div class="frame morning-state digest-empty"><div class="col-left"><section class="hero">${left}</section></div>
     <div class="stage"><div class="big enter"><div class="big-scroll"><div class="state-card">${right}</div></div></div></div></div>`;
   NS.wireTilt($(".stage"));
+  NS.wireRun?.($("#app"));
 }
 
 function render() {
@@ -92,7 +93,6 @@ function render() {
   const tOf = i => i.topic || "Other";
   const groups = [...topics, "Other"].filter(t => listOf.some(i => tOf(i) === t));
   const latest = D.days[0] === D.day;
-  const running = NS.runActive && NS.runActive();
   const openChat = !!$(".frame.digest.chat-open");
   $("#app").innerHTML = `<div class="frame digest ${openChat ? "chat-open" : ""}">
     <div class="col-left">
@@ -100,8 +100,8 @@ function render() {
         <p class="eyebrow">${D.day === todayIso() ? "Tonight's digest" : "Digest"} · ${esc(dayLong(D.day))}</p>
         <h1><em>${words(items.length)}</em> stor${items.length === 1 ? "y" : "ies"}<br>for your topics.</h1>
         <p class="sub">Gemma read ${st.judged} of the ${st.new} new items against your ${topics.length} topic${topics.length === 1 ? "" : "s"}${D.topics.length ? "" : D.projects.length ? " (your project names; add your own topics to sort by them)" : ""}.${D.projects.length ? ` <a href="#/actions">Actions</a> has what to do about your projects.` : ""}</p>
-        ${running ? `<p class="runnote">● The scout is out right now · <a href="#/actions">follow it</a></p>` : ""}
         <div class="listenrow" id="listenRow" hidden></div>
+        ${NS.runRow ? NS.runRow() : ""}
         ${D.days.length > 1 ? `<div class="days">${[...D.days].slice(0, 7).reverse().map(d => `<button data-day="${esc(d)}" class="${d === D.day ? "on" : ""}">${esc(dayShort(d))}</button>`).join("")}</div>` : ""}
       </section>
       <div class="tfilter" id="tfilter">
@@ -139,6 +139,7 @@ function render() {
   $("#moreT").onclick = () => go("#/digest/more");
   drawFeed();
   NS.listen?.status(D.day); // ▶ Listen (voice add-on only): hero row, story buttons, NOW READING
+  NS.wireRun?.($("#app")); // ▶ Run now / Scout is out
   if (openChat && hasChat()) NS.openChat(NS.chatCtx?.() || { kind: "digest", day: D.day });
 }
 

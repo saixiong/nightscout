@@ -30,6 +30,8 @@ Gemma reads the night's most promising items against your topics. Every story th
 
 On each story, 🔖 saves it (it stays under **Saved** after the Digest rolls over), 👎 **Not for me** hides it and ranks items like it lower, and 🔇 mutes its source. Hiding and muting can be undone from the message that appears.
 
+**▶ Run now** (on the Digest and on Actions) sends the scout out straight away instead of waiting for tonight. It reads your sources for anything new since the last run, and what it finds joins today's Digest and Actions; what's already there stays. Choose **Digest and Actions**, or **Digest only**, which is a few minutes faster but leaves Actions as it is (new items from it get no next steps). The box tells you about how long it takes, from your last runs. While it works you can keep using the app: the header shows how far it is, **Watch it ›** follows it stage by stage, and a message tells you when it's back. One run at a time.
+
 # Topics
 
 Topics are what the Digest looks for. Type them in your own words: "Local LLMs", "AI policy", "Rust". Change them in Setup or with **✎ Topics** on the Digest. New topics fill from the next run. They're saved at the top of `profile.yaml` and survive profile rebuilds.

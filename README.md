@@ -57,7 +57,7 @@ pip install -e .
 # 3. Set it up in the browser: model, topics (and projects if you like), sources, schedule
 night-scout setup        # opens http://127.0.0.1:8765 on the setup walkthrough
 #    or from the terminal: night-scout init ~/code/project-a ~/code/project-b
-night-scout run          # first run: ~10-15 min on an M-series Mac
+night-scout run          # first run: ~10-15 min on an M-series Mac (or ▶ Run now in the app)
 night-scout serve        # the Digest, Actions and everything else
 
 # 4. Make it nightly
@@ -69,6 +69,14 @@ night-scout schedule --install   # launchd (macOS) / systemd timer (Linux)
 > currently ships without the grammar library that constrains output to a JSON schema.
 > Night Scout still works on it (it falls back to schema-in-prompt plus validation), but
 > constrained output is more reliable.
+
+**Or just double-click** `Night Scout.command` (macOS) or `Night Scout.cmd` (Windows) in the
+folder you cloned. The first launch installs Night Scout into `.venv` there (Python 3.11+
+needed); every launch starts Ollama if it's installed but not running, then opens the Setup
+walkthrough the first time and your Digest after that. Close the window to stop it. Ollama is
+optional: in Setup you can pick a cloud provider instead (Anthropic, Gemini, OpenAI, OpenRouter
+or any OpenAI-compatible endpoint), and without Ollama's embeddings the pre-filter falls back to
+keywords.
 
 `night-scout init` writes `~/.night-scout/config.yaml` with a small, public-safe starter set
 of sources. Edit it, or use the **Sources** page in the web UI. Set `NIGHT_SCOUT_HOME` to keep
@@ -106,6 +114,11 @@ fetch ─► dedupe ─► pre-filter ─► Gemma judges ─► Gemma proposes 
 5. **Propose.** For items above the bar, Gemma suggests one to three typed actions. A
    Try-it plan is install commands, a smoke test and the output that means "it works".
 6. **Digest.** The top picks (seven by default) go to markdown and the web UI.
+
+Don't want to wait for tonight? **▶ Run now** on the Digest or Actions page (or `night-scout
+run`) does the same pass straight away; what it finds joins today's Digest and Actions, and the
+morning's picks stay. **Digest only** (`night-scout run --digest-only`) skips steps 5–6 and the
+project ideas: a few minutes faster, with Actions left as it was.
 
 ## The safety model
 
