@@ -352,7 +352,6 @@ def record(
                 plan.mode,
                 time.time() - t0,
             )
-            drop_other_keys(cfg, plan.day, keep=plan.key)
         return m
     finally:
         lock.release()
@@ -491,18 +490,6 @@ def preview(cfg: Config, voice: str) -> Path:
 
 
 # -- housekeeping ----------------------------------------------------------------------------
-def drop_other_keys(cfg: Config, day: str, keep: str) -> None:
-    """Older recordings of the same night (another voice or mode) once a new one is ready."""
-    d = listen_dir(cfg) / day
-    for k in d.iterdir() if d.is_dir() else []:
-        if (
-            k.is_dir()
-            and k.name != keep
-            and manifest_status(read_json(k / "manifest.json")) != "recording"
-        ):
-            shutil.rmtree(k, ignore_errors=True)
-
-
 def prune(cfg: Config, keep_days: int = KEEP_DAYS, now: float | None = None) -> int:
     """Delete recordings older than keep_days (by when they were made). Returns how many."""
     root = listen_dir(cfg)

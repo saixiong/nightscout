@@ -271,11 +271,12 @@ def test_prune_deletes_recordings_older_than_seven_days(cfg: Config) -> None:
     assert new.exists() and busy.exists()
 
 
-def test_a_new_recording_replaces_older_ones_of_that_night(cfg: Config, fake_voice: Path) -> None:
-    stale = _fake_recording(cfg, "2026-10-22", "d" * 16, age_days=0)
+def test_other_recordings_of_the_night_stay_until_pruned(cfg: Config, fake_voice: Path) -> None:
+    # a player may still be on the old voice's recording; age-based pruning cleans up
+    other = _fake_recording(cfg, "2026-10-22", "d" * 16, age_days=0)
     plan = listen.plan_for(cfg, DIGEST)
     listen.record(cfg, plan)
-    assert not stale.exists() and plan.out.exists()
+    assert other.exists() and plan.out.exists()
 
 
 def test_last_recording(cfg: Config, fake_voice: Path) -> None:
