@@ -177,7 +177,11 @@ It doesn't guess from memory: it calls research tools and shows each call as it 
 The chat uses the `chat` model role, which follows the Judge model unless you pick another
 in Settings → AI Providers → Model roles → Chat (or set `roles.chat` in `config.yaml`). With a
 cloud chat model, your questions, their context and the tools' results go to that provider.
-Conversations are kept in `scout.db`.
+Conversations are kept in `scout.db`, attachments next to it under `chat-attachments/`.
+**History ▾** in the drawer lists and searches them and reopens one where you left off;
+**All chats & search** opens the Chats page (search every question and answer, filter, read,
+continue). Deleting one asks twice and gives a few seconds to Undo, then removes its messages
+and attached files.
 
 Safety: text from pages, transcripts and search results is data, never instructions (the
 prompt says so, and tool output is passed back as tool results). One answer gets at most

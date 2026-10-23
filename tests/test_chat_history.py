@@ -52,6 +52,7 @@ def test_list_is_newest_first_with_labels_counts_and_plain_snippets(env) -> None
     assert first["snippet"] == "Follow-up answer."
     assert second["id"] == story and second["label"] == "Story · Ollama v0.40.9 released"
     assert second["icon"] == "story" and second["tools"] == 1
+    assert second["url"] == "https://e.example/a" and first["url"] is None
     assert second["snippet"] == "Ollama updated llama.cpp. faster"  # no markdown, no link URL
 
 

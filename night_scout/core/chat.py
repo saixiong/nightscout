@@ -380,8 +380,8 @@ def _window(text: str, q: str) -> str:
     return ("…" if start else "") + part + ("…" if i + len(q) + 150 < len(text) else "")
 
 
-def context_label(store: Store, context: dict[str, Any]) -> tuple[str, str]:
-    """What a conversation is about, as the drawer names it: (label, icon kind)."""
+def context_label(store: Store, context: dict[str, Any]) -> tuple[str, str, str | None]:
+    """What a conversation is about, as the drawer names it: (label, icon kind, story URL)."""
     kind = context.get("kind")
     if kind == "item":
         try:
@@ -389,16 +389,18 @@ def context_label(store: Store, context: dict[str, Any]) -> tuple[str, str]:
         except (TypeError, ValueError):
             item = None
         if item is None:
-            return "Story · no longer in your data", "story"
+            return "Story · no longer in your data", "story", None
         score = store.score(int(item["id"]))
         headline = _col(score, "headline") if score else None
         title = headline or " ".join(str(item["title"] or "").split())
         video = item["source"] == "youtube"
         noun, icon = ("Video", "video") if video else ("Story", "story")
-        return f"{noun} · {clip(title, 90)[0]}", icon
+        url = str(item["url"] or "")
+        link = url if url.startswith(("https://", "http://")) else None
+        return f"{noun} · {clip(title, 90)[0]}", icon, link
     if kind == "digest":
-        return f"Digest · {_day_name(str(context.get('day') or ''))}", "digest"
-    return "Night Scout", "app"
+        return f"Digest · {_day_name(str(context.get('day') or ''))}", "digest", None
+    return "Night Scout", "app", None
 
 
 def list_threads(
@@ -442,7 +444,7 @@ def list_threads(
             context = json.loads(r["context"])
         except ValueError:
             context = {}
-        label, icon = context_label(store, context)
+        label, icon, url = context_label(store, context)
         files = [
             str(a.get("name") or "attachment")
             for m in msgs
@@ -464,6 +466,7 @@ def list_threads(
                 "context": context,
                 "label": label,
                 "icon": icon,
+                "url": url,
                 "created_at": r["created_at"],
                 "updated_at": r["updated_at"],
                 "questions": sum(1 for m in msgs if m["role"] == "user"),

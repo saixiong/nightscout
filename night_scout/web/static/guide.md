@@ -96,6 +96,8 @@ Add a YouTube Data API key in **Settings → Chat & search** to search channels 
 
 **＋ New chat** starts a fresh conversation; the drawer otherwise keeps one running conversation for each thing you ask about.
 
+**History ▾** in the drawer lists every saved conversation, newest first, with what it was about. Type to search them, or click one to pick it up where you left off. **All chats & search** opens the Chats page: search every question and answer, filter to Night Scout, Digest, Stories or chats with files, read a conversation in full, and **Continue in chat**. To delete one, click 🗑 (or **Delete**) twice; you get a few seconds to **Undo**, then its messages and attached files are removed from your machine. Conversations are kept on your machine until you delete them.
+
 Web search is optional and off by default. Turn it on in **Settings → Chat & search** with your own SearXNG instance (no key; enable JSON output in its `settings.yml`) or a Brave Search API key, which is kept in your system keychain. Only Gemma's search words go to that service.
 
 Pages are fetched from your machine, only from public addresses, and only when Gemma asks. What they say is treated as information, never as instructions. One answer uses at most five lookups.

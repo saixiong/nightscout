@@ -92,7 +92,7 @@ async function openChat(ctx) {
   $("#chatIn")?.focus();
 }
 function closeChat() {
-  C.open = false; stop();
+  C.open = false; stop(); histClose();
   const el = document.getElementById("chat");
   if (el) { if (el.classList.contains("chat-float")) el.remove(); else el.innerHTML = ""; }
   layout(); fab();
@@ -104,6 +104,118 @@ function newChat() {
   C.openCards.clear(); C.dec.clear();
   render();
 }
+
+/* ---- history: the History ▾ dropdown, reopening and deleting saved conversations ---- */
+const CLOCK = `<svg class="hic" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="8" cy="8" r="6.3" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8 4.6V8l2.4 1.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>`;
+const H = { open: false, q: "", data: null, armed: null, armT: null, req: 0, qT: null };
+const dayStart = d => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x.getTime(); };
+function when(iso) {  // "Today" / "Yesterday" / "Earlier", and the time or date to show
+  const d = new Date(iso), days = Math.round((dayStart(Date.now()) - dayStart(d)) / 864e5);
+  const group = days < 1 ? "Today" : days < 2 ? "Yesterday" : "Earlier";
+  const text = group === "Earlier" ? d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }) : d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return { group, text };
+}
+const ICONS = { app: () => NS.scoutImg(15, "hk-img"), digest: () => "☾", story: () => "◆", video: () => "▶" };
+const kindIcon = t => `<span class="hk ${esc(t.icon)}" aria-hidden="true">${(ICONS[t.icon] || ICONS.story)()}</span>`;
+const ctxOfThread = t => t.context?.kind === "item" ? { kind: "item", id: +t.context.id, title: "" } : t.context?.kind === "digest" ? { kind: "digest", day: t.context.day || "" } : { kind: "app" };
+function grouped(list) {
+  const out = new Map();
+  for (const t of list) { const g = when(t.updated_at).group; if (!out.has(g)) out.set(g, []); out.get(g).push(t); }
+  return [...out];
+}
+async function histOpen() {
+  H.open = true; H.armed = null;
+  $("#chatHist")?.setAttribute("aria-expanded", "true");
+  histRender(); await histFetch();
+  $("#histQ")?.focus();
+}
+function histClose() {
+  H.open = false; clearTimeout(H.armT); H.armed = null;
+  $("#histDD")?.remove(); $("#chatHist")?.setAttribute("aria-expanded", "false");
+}
+async function histFetch() {
+  const n = ++H.req, r = await api("GET", `/api/chats?q=${encodeURIComponent(H.q)}`);
+  if (n !== H.req || !H.open) return;
+  H.data = r.ok ? r.data : { threads: [], total: 0, error: r.error };
+  histRender();
+}
+function histRender() {
+  const box = $("#chat .chat-in"); if (!box || !H.open) return;
+  let dd = $("#histDD");
+  if (!dd) {
+    box.insertAdjacentHTML("beforeend", `<div class="hdd" id="histDD" role="dialog" aria-label="Past conversations">
+      <div class="hdd-top"><input class="hdd-q" id="histQ" type="search" placeholder="Search your chats" autocomplete="off"><span class="muted small" id="histN"></span></div>
+      <div class="hdd-list" id="histList"></div>
+      <a class="hdd-all" id="histAll" href="#/chats">All chats &amp; search <span>›</span></a></div>`);
+    dd = $("#histDD");
+    const q = $("#histQ"); q.value = H.q;
+    q.oninput = () => { H.q = q.value; clearTimeout(H.qT); H.qT = setTimeout(histFetch, 180); };
+    $("#histAll").onclick = () => histClose();
+    dd.onclick = e => e.stopPropagation();
+  }
+  const D = H.data, list = $("#histList");
+  $("#histN").textContent = D ? `${D.total} saved` : "";
+  if (!D) { list.innerHTML = `<p class="muted small hdd-empty">Loading…</p>`; return; }
+  if (D.error) { list.innerHTML = `<p class="muted small hdd-empty">${esc(D.error)}</p>`; return; }
+  if (!D.threads.length) { list.innerHTML = `<p class="muted small hdd-empty">${H.q ? "No chats match." : "No saved chats yet. Ask something and it's kept here."}</p>`; return; }
+  list.innerHTML = grouped(D.threads).map(([g, ts]) => `<div class="hgrp">${g}</div>` + ts.map(t => {
+    const cur = t.id === C.thread, armed = t.id === H.armed;
+    const meta = [esc(t.label), when(t.updated_at).text, t.questions > 1 ? `${t.questions} questions` : "", t.files.length ? `📎 ${esc(t.files[0])}${t.files.length > 1 ? ` +${t.files.length - 1}` : ""}` : ""].filter(Boolean).join(" · ");
+    return `<div class="hrow ${cur ? "cur" : ""} ${armed ? "armed" : ""}" data-id="${t.id}" tabindex="0">${kindIcon(t)}
+      <div class="hb"><b>${esc(t.title)}</b><small>${meta}</small></div>${cur ? `<span class="htag">open</span>` : "<span></span>"}
+      <button class="hdel" data-del="${t.id}" title="Delete this conversation" aria-label="Delete this conversation">${armed ? "Delete? Click again" : "🗑"}</button></div>`;
+  }).join("")).join("");
+  $$(".hrow", list).forEach(row => {
+    const t = D.threads.find(x => x.id === +row.dataset.id);
+    const pick = () => { histClose(); openThread(t.id, ctxOfThread(t)); };
+    row.onclick = e => { if (!e.target.closest(".hdel")) pick(); };
+    row.onkeydown = e => { if (e.key === "Enter") pick(); };
+  });
+  $$(".hdel", list).forEach(b => b.onclick = e => {
+    e.stopPropagation();
+    const id = +b.dataset.del;
+    if (H.armed !== id) { H.armed = id; clearTimeout(H.armT); H.armT = setTimeout(() => { H.armed = null; if (H.open) histRender(); }, 4000); return histRender(); }
+    H.armed = null; clearTimeout(H.armT);
+    deleteThread(id, () => { if (H.open) histFetch(); });
+  });
+}
+/* Delete (the server keeps an Undo window), with "Deleted · Undo". `after` runs after delete and after undo. */
+async function deleteThread(id, after) {
+  const r = await api("DELETE", `/api/chat/${id}`);
+  if (!r.ok) return failToast(r, "Couldn't delete that conversation");
+  chatDeleted(id);
+  after?.();
+  NS.toast("Deleted the conversation.", async () => {
+    const u = await api("POST", `/api/chat/${id}/restore`);
+    if (!u.ok) return failToast(u, "Too late to undo");
+    NS.toast("Restored.");
+    after?.();
+  });
+}
+/* A conversation was deleted: the drawer stops showing or remembering it. */
+function chatDeleted(id) {
+  try { for (const k of Object.keys(sessionStorage)) if (k.startsWith("nsChat:") && +sessionStorage.getItem(k) === id) sessionStorage.removeItem(k); } catch (e) { /* private mode */ }
+  if (C.thread === id) { stop(); C.gen++; Object.assign(C, { thread: null, data: null, pending: null, err: null, fails: 0, att: [] }); C.openCards.clear(); C.dec.clear(); if (C.open) render(); }
+}
+/* Open the drawer on a saved conversation (from History or the Chats page). */
+async function openThread(id, ctx) {
+  const clean = ctx.kind === "app" ? { kind: "app" } : ctx.kind === "item" ? { kind: "item", id: +ctx.id, title: ctx.title || "" } : { kind: "digest", day: ctx.day || "" };
+  const key = keyOf(clean);
+  remember(key, id);
+  if (C.open && key === C.key && document.getElementById("chat")?.firstChild) {
+    if (C.thread !== id) {
+      stop(); C.gen++;
+      Object.assign(C, { thread: id, data: null, pending: null, err: null, fails: 0, att: [] });
+      C.openCards.clear(); C.dec.clear();
+      await load();
+    }
+    render(); if (C.data?.status === "running") poll();
+    return $("#chatIn")?.focus();
+  }
+  if (C.open) closeChat();
+  return openChat(clean);
+}
+document.addEventListener("click", e => { if (H.open && !e.target.closest("#histDD, #chatHist, #toast")) histClose(); });  // Undo keeps the list open
 
 /* ---- talking to the server ---- */
 async function load() {
@@ -176,7 +288,7 @@ function render() {
   // Keep what's been typed: the drawer is rebuilt below (e.g. when /api/chat/meta answers).
   const draft = document.getElementById("chatIn")?.value;
   el.innerHTML = `<div class="chat-in" role="complementary" aria-label="Ask Gemma">
-    <div class="chat-h"><b class="ch-title">${NS.scoutImg(20)} Ask Gemma</b><span class="spacer"></span><button class="newchat" id="chatNew" title="Start a new conversation" ${hasTalk() ? "" : "hidden"}>＋ New chat</button><button class="x" id="chatX" title="Close" aria-label="Close">✕</button></div>
+    <div class="chat-h"><b class="ch-title">${NS.scoutImg(20)} Ask Gemma</b><span class="spacer"></span><button class="newchat histbtn" id="chatHist" title="Past conversations" aria-haspopup="true" aria-expanded="false">${CLOCK} History ▾</button><button class="newchat" id="chatNew" title="Start a new conversation" ${hasTalk() ? "" : "hidden"}>＋ New chat</button><button class="x" id="chatX" title="Close" aria-label="Close">✕</button></div>
     <div class="ctx"><span class="muted">About:</span> <span class="ctxchip" title="${esc(ctxLabel())}">${esc(ctxLabel())}</span>${item ? `<button class="lnk" id="ctxAll">whole Digest</button>` : ""}${C.ctx.kind !== "app" ? `<button class="lnk" id="ctxApp" title="Night Scout, your setup, every night, or anything else">anything else</button>` : ""}</div>
     <div class="toolrow" id="chatTools">${toolChips()}</div>
     <div class="msgs" id="chatMsgs"></div>
@@ -184,7 +296,9 @@ function render() {
     <p class="chat-foot muted" id="chatFoot">${footer()}</p>
   </div>`;
   $("#chatX").onclick = closeChat;
-  $("#chatNew").onclick = () => { newChat(); $("#chatIn")?.focus(); };
+  $("#chatNew").onclick = () => { histClose(); newChat(); $("#chatIn")?.focus(); };
+  $("#chatHist").onclick = e => { e.stopPropagation(); H.open ? histClose() : histOpen(); };
+  if (H.open) { $("#chatHist").setAttribute("aria-expanded", "true"); histRender(); }  // a redraw keeps it open
   const all = $("#ctxAll"), ap = $("#ctxApp");
   if (all) all.onclick = () => openChat({ kind: "digest", day: NS.M?.day || "" });
   if (ap) ap.onclick = () => openChat({ kind: "app" });
@@ -437,8 +551,10 @@ document.addEventListener("keydown", e => {
   if (e.key !== "Escape") return;
   const lb = $(".lightbox");
   if (lb) { lb.remove(); return $("#chatIn")?.focus({ preventScroll: true }); }  // Esc closes only the lightbox
+  if (H.open) { histClose(); return $("#chatHist")?.focus(); }  // …and only the History dropdown
   if (C.open && !$("#tour") && !$(".sheet-wrap")) closeChat();
 });
 
-Object.assign(NS, { openChat, closeChat, chatMarkdown: md, chatCtx: () => (C.open ? { ...C.ctx } : null) });
+Object.assign(NS, { openChat, closeChat, chatMarkdown: md, chatCtx: () => (C.open ? { ...C.ctx } : null),
+  openThread, chatDeleted, deleteThread, chatWhen: when, chatKindIcon: kindIcon, chatGrouped: grouped, chatThreadCtx: ctxOfThread, chatThread: () => (C.open ? C.thread : null) });
 })();
