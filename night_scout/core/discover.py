@@ -393,12 +393,43 @@ def _github_repo(repo: str, http: PoliteClient, token_env: str) -> str:
         data = http.get(f"https://api.github.com/repos/{repo}", headers=headers).json()
     except SourceError as e:
         if e.kind == "not-found":
-            raise ValueError(f"GitHub has no repository {repo!r}. Check the owner and name.") from e
+            name = repo.split("/", 1)[1]
+            hint = _github_guess(name, http, headers)
+            raise ValueError(
+                f"GitHub has no repository {repo!r}."
+                + (
+                    f" Did you mean {hint[0]}? "
+                    f"(most-starred repos named {name!r}: {', '.join(hint)})"
+                    if hint
+                    else " Check the owner and name."
+                )
+            ) from e
         return repo
     except ValueError:  # not JSON
         return repo
     full = data.get("full_name") if isinstance(data, dict) else None
     return full if isinstance(full, str) and _GH_REPO.match(full) else repo
+
+
+def _github_guess(name: str, http: PoliteClient, headers: dict[str, str]) -> list[str]:
+    """Up to 3 owner/repo names with exactly this repo name, most stars first ([] if unknown)."""
+    try:
+        data = http.get(
+            "https://api.github.com/search/repositories",
+            params={"q": f"{name} in:name", "sort": "stars", "order": "desc", "per_page": 10},
+            headers=headers,
+        ).json()
+    except (SourceError, ValueError):
+        return []
+    items = data.get("items", []) if isinstance(data, dict) else []
+    exact = [
+        str(i.get("full_name"))
+        for i in items
+        if isinstance(i, dict)
+        and str(i.get("name", "")).lower() == name.lower()
+        and _GH_REPO.match(str(i.get("full_name", "")))
+    ]
+    return exact[:3]
 
 
 def _add_github(cfg: Config, value: str, http: PoliteClient | None = None) -> None:

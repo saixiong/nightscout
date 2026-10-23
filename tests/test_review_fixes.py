@@ -57,8 +57,33 @@ def _gh(routes):
     return client, seen
 
 
+def test_github_missing_repo_suggests_the_real_one() -> None:
+    hits = {
+        "items": [
+            {"name": "rich", "full_name": "Textualize/rich"},
+            {"name": "rich-cli", "full_name": "Textualize/rich-cli"},
+            {"name": "rich", "full_name": "someone/rich"},
+        ]
+    }
+    client, seen = _gh(
+        {
+            "api.github.com/repos/richtyp/rich": 404,
+            "api.github.com/search/repositories": lambda r: httpx.Response(200, json=hits),
+        }
+    )
+    with pytest.raises(
+        ValueError,
+        match=r"Did you mean Textualize/rich\? \(most-starred repos named 'rich': "
+        r"Textualize/rich, someone/rich\)",
+    ):
+        add_source(Config(), "github", "richtyp/rich", client)
+    assert any("q=rich+in%3Aname" in u or "q=rich%20in%3Aname" in u for u in seen)
+
+
 def test_github_repo_must_exist() -> None:
-    client, seen = _gh({"api.github.com/repos/pallets/rich": 404})
+    client, seen = _gh(
+        {"api.github.com/repos/pallets/rich": 404, "api.github.com/search/repositories": 404}
+    )
     with pytest.raises(ValueError, match="GitHub has no repository 'pallets/rich'"):
         add_source(Config(), "github", "pallets/rich", client)
     assert any("api.github.com/repos/pallets/rich" in u for u in seen)
