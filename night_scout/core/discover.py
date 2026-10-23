@@ -436,6 +436,15 @@ def _add_mastodon(cfg: Config, value: str) -> None:
     cfg.sources.mastodon.append(MastodonSource(instance=instance, hashtags=[tag]))
 
 
+class GitHubRepoNotFound(ValueError):
+    """GitHub has no `repo`. `hints`: owner/repo names with exactly that name, most stars first."""
+
+    def __init__(self, message: str, repo: str, hints: list[str]) -> None:
+        super().__init__(message)
+        self.repo = repo
+        self.hints = hints
+
+
 def _github_repo(repo: str, http: PoliteClient, token_env: str) -> str:
     """The repo's real owner/name on GitHub (renamed repos redirect). A repo that doesn't
     exist is a ValueError; if GitHub can't be asked (rate limit, network) the name is kept."""
@@ -452,14 +461,16 @@ def _github_repo(repo: str, http: PoliteClient, token_env: str) -> str:
         if e.kind == "not-found":
             name = repo.split("/", 1)[1]
             hint = _github_guess(name, http, headers)
-            raise ValueError(
+            raise GitHubRepoNotFound(
                 f"GitHub has no repository {repo!r}."
                 + (
                     f" Did you mean {hint[0]}? "
                     f"(most-starred repos named {name!r}: {', '.join(hint)})"
                     if hint
                     else " Check the owner and name."
-                )
+                ),
+                repo,
+                hint,
             ) from e
         return repo
     except ValueError:  # not JSON

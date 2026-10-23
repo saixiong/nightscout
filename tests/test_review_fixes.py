@@ -214,3 +214,87 @@ def test_github_check_is_one_quick_try() -> None:
         and cfg.sources.github is not None
         and "astral-sh/uv" in cfg.sources.github.releases
     )
+
+
+# -- chat proposals: a guessed GitHub owner that doesn't exist --------------------------------
+def _tool_ctx(tmp_path, routes):
+    from night_scout.core.tools.base import ToolContext
+
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        seen.append(url)
+        for needle, answer in routes.items():
+            if needle in url:
+                return answer(request) if callable(answer) else httpx.Response(answer, text="nope")
+        raise AssertionError(f"unexpected request in test: {url}")
+
+    cfg = Config(data_dir=str(tmp_path / "data"))
+    return ToolContext(cfg=cfg, transport=httpx.MockTransport(handler)), seen
+
+
+def _search(*names: str):
+    items = [{"name": n.split("/")[1], "full_name": n} for n in names]
+    return lambda r: httpx.Response(200, json={"items": items})
+
+
+def test_chat_proposal_corrects_a_guessed_github_owner(tmp_path) -> None:
+    from night_scout.core.tools import app as app_tools
+
+    ctx, seen = _tool_ctx(
+        tmp_path,
+        {
+            "api.github.com/repos/textrell/rich": 404,
+            "api.github.com/search/repositories": _search("Textualize/rich", "Textualize/rich-cli"),
+            "api.github.com/repos/Textualize/rich": lambda r: httpx.Response(
+                200, json={"full_name": "Textualize/rich"}
+            ),
+        },
+    )
+    out = app_tools.propose_source(ctx, "github", "textrell/rich", "Repository for rich.")
+    prop = out["proposal"]
+    assert prop["value"] == "Textualize/rich" and prop["corrected_from"] == "textrell/rich"
+    assert "Textualize/rich" in prop["label"]
+    assert "Call it Textualize/rich" in out["note"] and "Nothing is added" in out["note"]
+    assert ctx.cfg.sources.github is None or not ctx.cfg.sources.github.releases  # dry run only
+    assert any("repos/Textualize/rich" in u for u in seen)
+
+
+def test_chat_proposal_with_several_same_name_repos_stays_an_error(tmp_path) -> None:
+    from night_scout.core.tools import app as app_tools
+
+    ctx, _ = _tool_ctx(
+        tmp_path,
+        {
+            "api.github.com/repos/textrell/rich": 404,
+            "api.github.com/search/repositories": _search("Textualize/rich", "someone/rich"),
+        },
+    )
+    out = app_tools.propose_source(ctx, "github", "textrell/rich")
+    assert "proposal" not in out
+    assert "Did you mean Textualize/rich?" in out["error"]
+
+
+def test_chat_proposal_without_a_same_name_repo_stays_an_error(tmp_path) -> None:
+    from night_scout.core.tools import app as app_tools
+
+    ctx, _ = _tool_ctx(
+        tmp_path,
+        {"api.github.com/repos/nobody/zzqx": 404, "api.github.com/search/repositories": _search()},
+    )
+    out = app_tools.propose_source(ctx, "github", "nobody/zzqx")
+    assert "proposal" not in out and "Check the owner and name" in out["error"]
+
+
+def test_sources_form_never_autocorrects_a_github_repo() -> None:
+    client, _ = _gh(
+        {
+            "api.github.com/repos/textrell/rich": 404,
+            "api.github.com/search/repositories": _search("Textualize/rich"),
+        }
+    )
+    cfg = Config()
+    with pytest.raises(ValueError, match=r"Did you mean Textualize/rich\?"):
+        add_source(cfg, "github", "textrell/rich", client)
+    assert cfg.sources.github is None or not cfg.sources.github.releases

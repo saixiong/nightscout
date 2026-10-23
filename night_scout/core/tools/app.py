@@ -222,7 +222,7 @@ def search_all_nights(ctx: ToolContext, query: str) -> dict[str, Any]:
 
 # -- proposals -------------------------------------------------------------------------------
 def propose_source(ctx: ToolContext, type: str, value: str, why: str = "") -> dict[str, Any]:
-    from ..discover import SOURCE_TYPES, add_source
+    from ..discover import SOURCE_TYPES, GitHubRepoNotFound, add_source
 
     kind = (type or "").strip().lower()
     val = (value or "").strip()
@@ -234,21 +234,37 @@ def propose_source(ctx: ToolContext, type: str, value: str, why: str = "") -> di
         return fail("Give what to follow: a URL, @handle, subreddit, keyword or owner/repo.")
     # Dry run on a copy of the config: checks the source resolves and isn't already followed,
     # and gives its real name. Nothing is saved here.
+    corrected_from = None
     try:
         with PoliteClient(ctx.cfg.contact, transport=ctx.transport) as client:
-            label = add_source(copy.deepcopy(ctx.cfg), kind, val, client)
+            try:
+                label = add_source(copy.deepcopy(ctx.cfg), kind, val, client)
+            except GitHubRepoNotFound as e:
+                # A guessed owner that doesn't exist, with exactly one repo of that name on GitHub
+                # (e.g. textrell/rich → Textualize/rich): propose that one, labelled as corrected.
+                # The reader still decides; anything else stays an error with the hints.
+                if len(e.hints) != 1:
+                    raise
+                label = add_source(copy.deepcopy(ctx.cfg), kind, e.hints[0], client)
+                corrected_from, val = e.repo, e.hints[0]
     except (ValueError, SourceError) as e:
         return fail(f"That can't be added as a {kind} source: {e}")
-    return {
-        "proposal": {
-            "kind": "source",
-            "type": kind,
-            "value": val,
-            "label": label,
-            "why": clip(" ".join((why or "").split()), 200)[0],
-        },
-        "note": "The reader now sees an 'Add source' button. Nothing is added until they click it.",
+    prop: dict[str, Any] = {
+        "kind": "source",
+        "type": kind,
+        "value": val,
+        "label": label,
+        "why": clip(" ".join((why or "").split()), 200)[0],
     }
+    note = "The reader now sees an 'Add source' button. Nothing is added until they click it."
+    if corrected_from:
+        prop["corrected_from"] = corrected_from
+        note = (
+            f"GitHub has no repository {corrected_from!r}; the only repository with that name is "
+            f"{val}, so the button proposes {val} and says it was corrected. Call it {val} in "
+            "your answer. " + note
+        )
+    return {"proposal": prop, "note": note}
 
 
 def propose_topic(ctx: ToolContext, topic: str) -> dict[str, Any]:
