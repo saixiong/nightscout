@@ -115,10 +115,12 @@ fetch ─► dedupe ─► pre-filter ─► Gemma judges ─► Gemma proposes 
    Try-it plan is install commands, a smoke test and the output that means "it works".
 6. **Digest.** The top picks (seven by default) go to markdown and the web UI.
 
+## Run now
+
 Don't want to wait for tonight? **▶ Run now** on the Digest or Actions page (or `night-scout
 run`) does the same pass straight away; what it finds joins today's Digest and Actions, and the
-morning's picks stay. **Digest only** (`night-scout run --digest-only`) skips steps 5–6 and the
-project ideas: a few minutes faster, with Actions left as it was.
+morning's picks stay. **Digest only** (`night-scout run --digest-only`) skips step 5 (Propose)
+and the project ideas: a few minutes faster, with Actions left as it was.
 
 ## The safety model
 
