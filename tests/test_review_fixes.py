@@ -142,3 +142,27 @@ def test_readd_resolves_from_the_duplicate_message_without_network() -> None:
     assert (
         e.value.key == "youtube:UCsBjURrPoezykLs9EqgamOA" and e.value.label == "YouTube: Fireship"
     )
+
+
+def test_youtube_add_survives_a_feed_outage_when_the_page_resolves() -> None:
+    page = (
+        '<meta property="og:title" content="Higgsfield AI &amp; Friends">'
+        '<link rel="canonical" href="https://www.youtube.com/channel/UCh13OyDSm-Kb8ij3yZArtFg">'
+    )
+    client, _ = _gh(
+        {
+            "/feeds/videos.xml": 404,
+            "youtube.com/@HiggsfieldAI": lambda r: httpx.Response(200, text=page),
+        }
+    )
+    cfg = Config()
+    add_source(cfg, "youtube", "@HiggsfieldAI", client)
+    assert [(y.name, y.channel_id) for y in cfg.sources.youtube] == [
+        ("Higgsfield AI & Friends", "UCh13OyDSm-Kb8ij3yZArtFg")
+    ]
+
+
+def test_youtube_bare_channel_id_still_needs_the_feed() -> None:
+    client, _ = _gh({"/feeds/videos.xml": 404})
+    with pytest.raises(ValueError, match="no public feed"):
+        add_source(Config(), "youtube", "UCh13OyDSm-Kb8ij3yZArtFg", client)

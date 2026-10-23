@@ -8,6 +8,7 @@ message; nothing is added unless the input checks out.
 from __future__ import annotations
 
 import contextlib
+import html as html_lib
 import os
 import re
 from collections.abc import Callable
@@ -212,6 +213,31 @@ def resolve_youtube(handle_or_url: str, client: PoliteClient) -> tuple[str, str]
     return youtube_feed_title(youtube_channel_id(handle_or_url, client), client)
 
 
+_YT_TITLE = re.compile(r'<meta property="og:title" content="([^"]{1,200})"')
+
+
+def youtube_channel(handle_or_url: str, client: PoliteClient) -> tuple[str, str | None]:
+    """(channel id, the channel page's title or None if no page was opened)."""
+    channel_id, page = _youtube_target(handle_or_url)
+    title: str | None = None
+    if channel_id is None and page is not None:
+        try:
+            html = client.get_public(page).content.decode("utf-8", errors="replace")
+        except SourceError as e:
+            raise ValueError(f"Couldn't open {page} ({e}).") from e
+        for pat in _YT_ID_PATTERNS:
+            m = pat.search(html)
+            if m:
+                channel_id = m.group(1)
+                break
+        if channel_id is None:
+            raise ValueError(f"Couldn't find a channel id on {page}.")
+        t = _YT_TITLE.search(html)
+        title = html_lib.unescape(t.group(1)).strip() if t else None
+    assert channel_id is not None
+    return channel_id, title
+
+
 def youtube_channel_id(handle_or_url: str, client: PoliteClient) -> str:
     """The channel id for an @handle, channel URL or id (opens the channel page if needed)."""
     channel_id, page = _youtube_target(handle_or_url)
@@ -323,11 +349,18 @@ def _add_arxiv(cfg: Config, value: str) -> None:
 
 
 def _add_youtube(cfg: Config, value: str, client: PoliteClient) -> None:
-    channel_id = youtube_channel_id(value, client)
+    channel_id, page_title = youtube_channel(value, client)
     for y in cfg.sources.youtube:  # before the feed check: a duplicate needs no network
         if y.channel_id == channel_id:
             raise ValueError(f"Already following YouTube: {y.name}.")
-    channel_id, title = youtube_feed_title(channel_id, client)
+    try:
+        channel_id, title = youtube_feed_title(channel_id, client)
+    except ValueError:
+        # YouTube's feed endpoint flaps (404/500 for real channels, Oct 2026). The channel page
+        # opened and named this channel, so it exists: add it; tonight's fetch retries the feed.
+        if not page_title:
+            raise
+        title = page_title
     cfg.sources.youtube.append(
         YouTubeSource(name=" ".join(title.split())[:60], channel_id=channel_id)
     )
