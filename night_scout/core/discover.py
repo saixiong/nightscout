@@ -8,6 +8,7 @@ message; nothing is added unless the input checks out.
 from __future__ import annotations
 
 import contextlib
+import os
 import re
 from collections.abc import Callable
 from html.parser import HTMLParser
@@ -381,7 +382,26 @@ def _add_mastodon(cfg: Config, value: str) -> None:
     cfg.sources.mastodon.append(MastodonSource(instance=instance, hashtags=[tag]))
 
 
-def _add_github(cfg: Config, value: str) -> None:
+def _github_repo(repo: str, http: PoliteClient, token_env: str) -> str:
+    """The repo's real owner/name on GitHub (renamed repos redirect). A repo that doesn't
+    exist is a ValueError; if GitHub can't be asked (rate limit, network) the name is kept."""
+    headers = {"Accept": "application/vnd.github+json"}
+    token = os.environ.get(token_env, "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        data = http.get(f"https://api.github.com/repos/{repo}", headers=headers).json()
+    except SourceError as e:
+        if e.kind == "not-found":
+            raise ValueError(f"GitHub has no repository {repo!r}. Check the owner and name.") from e
+        return repo
+    except ValueError:  # not JSON
+        return repo
+    full = data.get("full_name") if isinstance(data, dict) else None
+    return full if isinstance(full, str) and _GH_REPO.match(full) else repo
+
+
+def _add_github(cfg: Config, value: str, http: PoliteClient | None = None) -> None:
     v = value.strip()
     m = re.match(r"^(?:https?://)?(?:www\.)?github\.com/([^/\s]+/[^/?#\s]+)", v, re.I)
     gh = cfg.sources.github or GitHubSource()
@@ -389,6 +409,8 @@ def _add_github(cfg: Config, value: str) -> None:
     if m or ("/" in v and " " not in v and ":" not in v):
         if not _GH_REPO.match(repo):
             raise ValueError(f"{v!r} isn't a GitHub owner/repo.")
+        if http is not None:  # make sure it exists, under its current name
+            repo = _github_repo(repo, http, gh.token_env)
         if _has(gh.releases, repo):
             raise ValueError(f"Already following {repo} releases.")
         gh.releases.append(repo)
@@ -409,7 +431,10 @@ class AlreadyFollowing(ValueError):
         self.label = label
 
 
-def _adders(work: Config, value: str, http: PoliteClient) -> dict[str, Callable[[], None]]:
+def _adders(
+    work: Config, value: str, http: PoliteClient, verify: PoliteClient | None = None
+) -> dict[str, Callable[[], None]]:
+    """`verify`: a caller-supplied client for extra existence checks (GitHub repos)."""
     return {
         "website": lambda: _add_rss(work, "website", value, http),
         "newsletter": lambda: _add_rss(work, "newsletter", value, http),
@@ -420,7 +445,7 @@ def _adders(work: Config, value: str, http: PoliteClient) -> dict[str, Callable[
         "hackernews": lambda: _add_hackernews(work, value),
         "bluesky": lambda: _add_bluesky(work, value),
         "mastodon": lambda: _add_mastodon(work, value),
-        "github": lambda: _add_github(work, value),
+        "github": lambda: _add_github(work, value, verify),
     }
 
 
@@ -471,7 +496,7 @@ def add_source_keyed(
 
     try:
         try:
-            _adders(work, value, http)[type]()
+            _adders(work, value, http, client)[type]()
         except ValueError as e:
             if str(e).startswith("Already following"):  # the adders' own duplicate check
                 raise AlreadyFollowing(*existing(), message=str(e)) from e

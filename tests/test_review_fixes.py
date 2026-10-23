@@ -1,0 +1,96 @@
+"""Fixes for bugs the rebuilt e2e kits found (chat history tool notes, GitHub repo check)."""
+
+from __future__ import annotations
+
+import httpx
+import pytest
+
+from night_scout.core.chat import add_message, create_thread, ensure_tables, history
+from night_scout.core.config import Config
+from night_scout.core.db import Store
+from night_scout.core.discover import add_source
+
+from .conftest import make_client
+
+
+def test_history_notes_the_tools_an_answer_used(store: Store) -> None:
+    ensure_tables(store)
+    t = create_thread(store, {"kind": "app"}, "Ask")
+    add_message(store, t, 1, "user", "Follow Fireship and add a Rust topic")
+    add_message(
+        store,
+        t,
+        1,
+        "tool",
+        tool_name="propose_source",
+        tool_args={"type": "youtube", "value": "@fireship"},
+        ok=True,
+        result="{}",
+    )
+    add_message(
+        store,
+        t,
+        1,
+        "tool",
+        tool_name="propose_topic",
+        tool_args={"topic": "Rust"},
+        ok=True,
+        result="{}",
+    )
+    add_message(store, t, 1, "assistant", "I've put buttons below.")
+    add_message(store, t, 2, "user", "What's new tonight?")
+    add_message(store, t, 2, "assistant", "Three stories.")
+    h = history(store, t, 3)
+    assert [m["role"] for m in h] == ["user", "assistant", "user", "assistant"]
+    first = h[1]["content"]
+    assert first.startswith("I've put buttons below.")
+    assert (
+        "propose_source(type=youtube, value=@fireship)" in first
+        and "propose_topic(topic=Rust)" in first
+    )
+    assert "call the tool again" in first
+    assert h[3]["content"] == "Three stories."  # no tools, no note
+
+
+def _gh(routes):
+    client, seen = make_client(routes)
+    return client, seen
+
+
+def test_github_repo_must_exist() -> None:
+    client, seen = _gh({"api.github.com/repos/pallets/rich": 404})
+    with pytest.raises(ValueError, match="GitHub has no repository 'pallets/rich'"):
+        add_source(Config(), "github", "pallets/rich", client)
+    assert any("api.github.com/repos/pallets/rich" in u for u in seen)
+
+
+def test_github_repo_uses_its_real_name() -> None:
+    client, _ = _gh(
+        {
+            "api.github.com/repos/textualize/rich": lambda r: httpx.Response(
+                200, json={"full_name": "Textualize/rich"}
+            )
+        }
+    )
+    cfg = Config()
+    add_source(cfg, "github", "textualize/rich", client)
+    assert cfg.sources.github is not None and cfg.sources.github.releases == ["Textualize/rich"]
+
+
+def test_github_check_can_be_unavailable() -> None:
+    def limited(r: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            403, headers={"x-ratelimit-remaining": "0"}, json={"message": "API rate limit exceeded"}
+        )
+
+    client, _ = _gh({"api.github.com/repos/": limited})
+    cfg = Config()
+    add_source(cfg, "github", "astral-sh/uv", client)  # can't ask GitHub: keep the name
+    assert cfg.sources.github is not None and "astral-sh/uv" in cfg.sources.github.releases
+
+
+def test_github_search_is_not_checked() -> None:
+    client, seen = _gh({})
+    cfg = Config()
+    add_source(cfg, "github", "topic:mcp language:python", client)
+    assert not seen

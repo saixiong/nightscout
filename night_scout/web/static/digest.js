@@ -27,6 +27,8 @@ let D = null;                 // GET /api/digest
 const V = { filter: "all", view: "digest", page: 1, cur: null };
 let held = false;            // a jump holds its story until you scroll (see watchFeed)
 const hasChat = () => typeof NS.openChat === "function";
+// A reload can finish after you've gone to another page: only redraw if you're still on the Digest.
+const onDigest = () => (location.hash.split("/")[1] || "digest") === "digest";
 
 async function load(day) {
   const r = await api("GET", "/api/digest" + (day ? `?day=${encodeURIComponent(day)}` : ""));
@@ -127,6 +129,7 @@ function render() {
   $$(".days [data-day]").forEach(b => b.onclick = async () => {
     if (b.dataset.day === D.day) return;
     const r = await load(b.dataset.day); if (!r.ok) return failToast(r);
+    if (!onDigest()) return;
     V.page = 1; V.view = "digest"; V.filter = "all"; V.cur = null;
     if (location.hash !== "#/digest") history.replaceState(null, "", "#/digest");
     render();
@@ -210,23 +213,23 @@ async function act(a, id, btn) {
   if (a === "save") {
     const r = await api("POST", `/api/item/${id}/save`, { saved: !i.saved });
     if (!r.ok) { btn.disabled = false; return failToast(r, "Saving"); }
-    const sc = keep(); await load(D.day); render(); const f = $("#feed"); if (f) f.scrollTop = sc;
+    const sc = keep(); await load(D.day); if (onDigest()) { render(); const f = $("#feed"); if (f) f.scrollTop = sc; }
     return toast(r.data.saved ? "<b>Saved.</b> It stays under 🔖 Saved after the Digest rolls over." : "Removed from Saved.");
   }
   if (a === "less") {
     const r = await api("POST", `/api/item/${id}/vote`, { value: "down" });
     if (!r.ok) { btn.disabled = false; return failToast(r, "Hiding"); }
-    await load(D.day); V.cur = null; render();
+    await load(D.day); V.cur = null; if (onDigest()) render();
     return toast(`<b>Hidden.</b> Items like it rank lower from tonight.`, async () => {
-      await api("POST", `/api/item/${id}/vote`, { value: "clear" }); await load(D.day); render();
+      await api("POST", `/api/item/${id}/vote`, { value: "clear" }); await load(D.day); if (onDigest()) render();
     });
   }
   if (a === "mute") {
     const r = await api("POST", "/api/source/mute", { name: i.source_name, muted: true });
     if (!r.ok) { btn.disabled = false; return failToast(r, "Muting"); }
-    await load(D.day); V.cur = null; render();
+    await load(D.day); V.cur = null; if (onDigest()) render();
     return toast(`<b>${esc(i.source_name)} muted.</b> Its items leave the Digest.`, async () => {
-      await api("POST", "/api/source/mute", { name: i.source_name, muted: false }); await load(D.day); render();
+      await api("POST", "/api/source/mute", { name: i.source_name, muted: false }); await load(D.day); if (onDigest()) render();
     });
   }
 }
@@ -289,7 +292,7 @@ async function topicsSheet() {
     };
     $("#tIn", w).onkeydown = e => { if (e.key === "Enter") $("#tAdd", w).click(); };
     $$("[data-rm]", w).forEach(b => b.onclick = async () => { if (await saveNow(topics.filter(t => t !== b.dataset.rm))) draw(); });
-    $("#tDone", w).onclick = async () => { close(); await load(D.day); render(); };
+    $("#tDone", w).onclick = async () => { close(); await load(D.day); if (onDigest()) render(); };
   };
   draw(); big.appendChild(w); big.classList.add("locked");
   w.onclick = e => { if (e.target === w) $("#tDone", w).click(); };

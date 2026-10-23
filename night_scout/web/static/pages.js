@@ -70,6 +70,16 @@ async function startTour() {
   STEPS = steps(); tourI = 0; showStep();
 }
 function endTour() { tourI = -1; $("#tour")?.remove(); }
+/* Resolve once the target and its parents stop moving: a new page's card slides in (bigIn, 0.85 s),
+   and measuring mid-animation puts the spotlight on a shrunken, rotated card. Capped at 1.5 s. */
+function settled(el) {
+  const moving = (document.getAnimations?.() || []).filter(an => {
+    const t = an.effect?.target;
+    return an.playState === "running" && t instanceof Element && t.contains(el) && an.effect.getComputedTiming().iterations !== Infinity;
+  });
+  const wait = Promise.all(moving.map(an => an.finished.catch(() => null)));
+  return Promise.race([wait, new Promise(r => setTimeout(r, 1500))]).then(() => new Promise(r => setTimeout(r, 60)));
+}
 function showStep(tries = 0) {
   const st = STEPS[tourI]; if (!st) return endTour();
   let ov = $("#tour");
@@ -80,9 +90,15 @@ function showStep(tries = 0) {
     // Pages like Settings load their data first; give them up to ~6 s before skipping a step.
     if (!el) { if (tries < 20) return setTimeout(() => showStep(tries + 1), 300); tourI++; return showStep(); }
     el.scrollIntoView({ block: "center" });
-    setTimeout(() => {
-      const r = el.getBoundingClientRect(), pad = 8, hole = $(".hole", ov), tip = $(".tip", ov);
-      Object.assign(hole.style, { left: r.left - pad + "px", top: r.top - pad + "px", width: r.width + pad * 2 + "px", height: Math.min(r.height, innerHeight - 140) + pad * 2 + "px" });
+    const hole = $(".hole", ov), pad = 8;
+    const fit = r => Object.assign(hole.style, { left: r.left - pad + "px", top: r.top - pad + "px", width: r.width + pad * 2 + "px", height: Math.min(r.height, innerHeight - 140) + pad * 2 + "px" });
+    settled(el).then(() => {
+      if (STEPS[tourI] !== st) return; // moved on meanwhile
+      const r = el.getBoundingClientRect(), tip = $(".tip", ov);
+      fit(r);
+      // A late layout change (data arriving, fonts) can still move it: check once more.
+      setTimeout(() => { if (STEPS[tourI] !== st) return; const q = el.getBoundingClientRect();
+        if (Math.abs(q.left - r.left) + Math.abs(q.top - r.top) + Math.abs(q.width - r.width) + Math.abs(q.height - r.height) > 2) fit(q); }, 400);
       tip.innerHTML = `<div class="tip-n">${tourI + 1} / ${STEPS.length}</div><h4>${esc(st.t)}</h4><p>${esc(st.x)}</p>
         <div class="row mt12"><button class="btn ghost" id="tSkip">Skip</button><span class="spacer grow"></span>
         ${tourI ? `<button class="btn ghost" id="tBack">Back</button>` : ""}<button class="btn primary" id="tNext">${tourI === STEPS.length - 1 ? "Done" : "Next"}</button></div>`;
@@ -94,7 +110,7 @@ function showStep(tries = 0) {
       $("#tNext").onclick = () => { tourI++; tourI >= STEPS.length ? (endTour(), toast("<b>That's the tour.</b> The Guide has the details.")) : showStep(); };
       $("#tSkip").onclick = endTour;
       const bk = $("#tBack"); if (bk) bk.onclick = () => { tourI--; showStep(); };
-    }, 120);
+    });
   };
   if (tries === 0 && location.hash !== st.at) { NS.reset(); location.hash = st.at; setTimeout(place, 950); } else place();
 }

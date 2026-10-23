@@ -281,12 +281,46 @@ def history(store: Store, thread_id: int, before_turn: int) -> list[dict[str, An
             r["content"] or ""
         )
         turns.setdefault(int(r["turn"]), {}).setdefault(r["role"], text)
+    used = _tools_used(store, thread_id, before_turn)
     out: list[dict[str, Any]] = []
-    for _turn, pair in sorted(turns.items()):
+    for turn, pair in sorted(turns.items()):
         if pair.get("user") and pair.get("assistant"):
+            answer = clip(pair["assistant"], 2500)[0]
+            if used.get(turn):
+                answer += "\n\n" + used[turn]
             out.append({"role": "user", "content": clip(pair["user"], 2500)[0]})
-            out.append({"role": "assistant", "content": clip(pair["assistant"], 2500)[0]})
+            out.append({"role": "assistant", "content": answer})
     return out
+
+
+def _tools_used(store: Store, thread_id: int, before_turn: int) -> dict[int, str]:
+    """Per earlier turn, a short note of the tools that answer called. Without it the model sees
+    its own "I've put buttons below" but not the propose_* calls that made them, and later
+    claims new cards without calling the tool (seen 3/3 in the assistant e2e)."""
+    rows = store.conn.execute(
+        "SELECT turn, tool_name, tool_args, ok FROM chat_messages WHERE thread_id=? AND turn<? "
+        "AND turn>=? AND role='tool' ORDER BY id",
+        (thread_id, before_turn, before_turn - HISTORY_TURNS),
+    ).fetchall()
+    calls: dict[int, list[str]] = {}
+    for r in rows:
+        try:
+            args = json.loads(r["tool_args"] or "{}")
+        except (TypeError, ValueError):
+            args = {}
+        brief = (
+            ", ".join(f"{k}={str(v)[:60]}" for k, v in list(args.items())[:3])
+            if isinstance(args, dict)
+            else ""
+        )
+        calls.setdefault(int(r["turn"]), []).append(
+            f"{r['tool_name']}({brief}){'' if r['ok'] else ' failed'}"
+        )
+    note = (
+        "[Tools you called for that answer: {}. Cards from propose_* calls belong to that "
+        "answer only; for any new suggestion, call the tool again in this answer.]"
+    )
+    return {t: note.format("; ".join(c)) for t, c in calls.items()}
 
 
 def turn_status(store: Store, thread_id: int) -> str:

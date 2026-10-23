@@ -173,6 +173,8 @@ function footer() {
 function render() {
   const el = document.getElementById("chat"); if (!el || !C.open) return;
   const item = C.ctx.kind === "item";
+  // Keep what's been typed: the drawer is rebuilt below (e.g. when /api/chat/meta answers).
+  const draft = document.getElementById("chatIn")?.value;
   el.innerHTML = `<div class="chat-in" role="complementary" aria-label="Ask Gemma">
     <div class="chat-h"><b class="ch-title">${NS.scoutImg(20)} Ask Gemma</b><span class="spacer"></span><button class="newchat" id="chatNew" title="Start a new conversation" ${hasTalk() ? "" : "hidden"}>＋ New chat</button><button class="x" id="chatX" title="Close" aria-label="Close">✕</button></div>
     <div class="ctx"><span class="muted">About:</span> <span class="ctxchip" title="${esc(ctxLabel())}">${esc(ctxLabel())}</span>${item ? `<button class="lnk" id="ctxAll">whole Digest</button>` : ""}${C.ctx.kind !== "app" ? `<button class="lnk" id="ctxApp" title="Night Scout, your setup, every night, or anything else">anything else</button>` : ""}</div>
@@ -190,12 +192,12 @@ function render() {
   drawer.ondragover = e => { if (!files(e)) return; e.preventDefault(); drawer.classList.add("drop"); };
   drawer.ondragleave = e => { if (!drawer.contains(e.relatedTarget)) drawer.classList.remove("drop"); };
   drawer.ondrop = e => { if (!files(e)) return; e.preventDefault(); drawer.classList.remove("drop"); addFiles([...e.dataTransfer.files]); };
-  renderMsgs(); renderBox();
+  renderMsgs(); renderBox(draft);
 }
-function renderBox() {
+function renderBox(draft) {
   const box = $("#chatBox"); if (!box) return;
   const busy = C.data?.status === "running" || !!C.pending;
-  const prev = $("#chatIn")?.value || "";
+  const prev = draft ?? ($("#chatIn")?.value || "");
   const what = C.ctx.kind === "app" ? "Ask anything" : `Ask about ${C.ctx.kind === "item" ? (isVideo() ? "this video" : "this story") : "tonight's stories"}`;
   box.innerHTML = `${C.att.length ? `<div class="attrow">${C.att.map((a, i) => attChip(a, i, true)).join("")}</div>` : ""}
     <button class="attbtn" id="chatAtt" title="Attach images, text files or PDFs (or paste a screenshot)" aria-label="Attach files" ${busy ? "disabled" : ""}>📎</button>
