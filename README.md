@@ -17,7 +17,7 @@ those projects**. In the morning you get two pages:
   more*, *Note for project*, *Watch later*. Most mornings it's three to seven cards; some
   mornings it says "nothing cleared the bar".
 
-![Night Scout morning view](docs/screenshot-morning.png)
+![The Night Scout Digest](docs/screenshot-digest.png)
 
 - **Your topics, your words.** Type the topics you follow (in Setup or on the Digest). Gemma
   files each item under one of them with a strict 0–100 % score; only 80 % and up make the
